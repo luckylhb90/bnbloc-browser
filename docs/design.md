@@ -1,0 +1,131 @@
+# Browser component
+
+Design: [docs/prd/2026-10-17-browser-component.md](../prd/2026-10-17-browser-component.md).
+
+A room agent operates web pages in a dedicated, visible Chrome profile on
+the machine it runs on, signed in as that machine's owner. The agent states
+a goal and the values to type; the component works the page one step at a
+time, and stops at a checkpoint whenever a person has to say something.
+
+It is an installable MCP tool component (`packages/browser/package.json`,
+binary `cmd/bnbloc-browser`), `credentials: "room"`: it reaches the
+gateway only through the room relay, as the person the agent is answering.
+The platform gives it two generic things (§3.1, §3.5 of the PRD); nothing
+else in the platform knows it exists.
+
+## Owners
+
+- `cmd/bnbloc-browser`:
+  - `tools.go` — the three tools, their wording, owner and requester
+    checks, consent, the result shape.
+  - `run.go` — the run loop, checkpoints, saved runs.
+  - `step.go` — the action space and the decision request.
+  - `browser.go` — observe, freshness, input, screenshot.
+  - `cdp.go` — the DevTools socket.
+  - `host.go` — which browser, launching it.
+  - `downloads.go` — finished downloads into the workspace.
+  - `relay.go` — the two relay calls.
+  - `snapshot.js` — the page reader, a modified port of browser-use's
+    jev-ultrafast (MIT, `NOTICE`).
+- `internal/wire/mcp_tools.go` `RoomRelaySession` and
+  `services/bridge/roomtools/relay.go` `relaySession`: the bound job's facts.
+- `services/gateway/decisions.go`: the decision rate.
+
+## The tools
+
+| Tool | What |
+|---|---|
+| `browse {goal, url, values?, threshold?}` | opens `url` in a new tab and runs to a checkpoint |
+| `browse_continue {run, reply?, value?, confirmed?, file?}` | resumes a run from its checkpoint |
+| `browser_look {run}` | the run's page: a screenshot and its visible text |
+
+A result is one JSON head (`run`, `checkpoint`, `site`, `url`, `title`,
+`summary`, the element in question), the page's visible text fenced by
+`roomlog.Fence` as data from the site, and a JPEG screenshot.
+
+## A step
+
+1. **Observe.** `snapshot.js` reads the page's interactive elements into
+   a numbered list (role, label, value, a guard per element) and the
+   visible text. Secrets (`type=password`, secret `autocomplete`) are
+   kind `secret` with no value, only whether one is filled; file inputs
+   are kind `upload`; hidden inputs are skipped. A fingerprint (URL, a
+   page key, the elements) tells whether anything changed.
+2. **Decide.** One `POST /v1/systemone` through the relay: an
+   `operation` choice among the operations the page offers (`CLICK`,
+   `TYPE_TEXT`, `SELECT`, `UPLOAD`, `FILL_SECRET` on its elements;
+   `SCROLL_DOWN`, `SCROLL_UP`, `WAIT` as page controls; `DONE`,
+   `BLOCKED`) and one `<op>_target` choice per element operation over the
+   code-numbered elements.
+   Only the head of the chosen operation is read; the model never
+   writes a selector, a URL or a value.
+3. **Check.** Before a click, a `predicate` (irreversible?) on the
+   element and its guard scope; at or above the run's threshold (default
+   0.3; a refused answer counts as 1) the run stops at
+   `needs_confirmation`. A typed value comes from `values` by label or
+   description containment, else `needs_input`. A secret is
+   `needs_human`. A link off the run's sites (registrable domains,
+   `publicsuffix`), or a page that has landed off them, is
+   `leaving_site`. A file input is `upload`. A paused step is kept and
+   executed as decided once the checkpoint is answered.
+4. **Execute.** A freshness check first (the page key and the target's
+   guard for click and select, the whole marker otherwise): stale →
+   re-observe and decide again. Then a hit-test at the element's point:
+   covered → stale. A native select that does not report its new value
+   ends the run `blocked`, never retried blindly.
+
+Three steps in a row without a change in the fingerprint (waits excepted)
+are `blocked`. A call works up to its budget (`--call-budget`, default
+45s) and answers `running`; the agent continues it. There is no limit on
+a run's length (`no-fixed-time-limits`).
+
+## Who may run it, and who confirms
+
+- The relay's `GET /session` answers the bound job's facts
+  (`wire.RoomRelaySession`): job, room, channel, requester, the bridge's
+  owner, the turn's message seq, and whether the turn is the requester's
+  own message (`byRequester`: false for a schedule's post and a job
+  another agent dispatched).
+- A run starts only for the owner's own requests. Another member's
+  request returns `needs_human` asking the owner to let them use the
+  browser; the grant itself is slice 3.
+- A run's requester is fixed when it starts. `browse_continue` from a
+  turn of anyone else is refused.
+- A confirmation (`confirmed: true` on `needs_confirmation`,
+  `leaving_site`, `upload`) holds only when the current turn is the
+  requester's own message and newer than the one the run paused on
+  (`messageSeq > pausedAtSeq`). The agent cannot confirm on its own:
+  the person has to say yes in the room after seeing the question.
+  `confirmed: false` declines, and the run continues with the decline
+  added to its goal.
+
+## The browser host
+
+In order:
+
+1. `--endpoint` / `BNBLOC_BROWSER_ENDPOINT` (an `http://127.0.0.1:<port>`
+   or `ws://` DevTools address).
+2. The endpoint file (`--endpoint-file`, default
+   `<tmp>/bnbloc-browser/endpoint.json`), written by
+   `bnbloc-browser launch`, the long-lived launcher a desktop runs.
+3. Otherwise the component launches Chrome itself, detached so it outlives
+   the call: the dedicated profile (`--profile`, default
+   `<user config>/bnbloc-browser/profile`),
+   `--remote-debugging-port=0`, the port read from `DevToolsActivePort`.
+
+Runs are kept as `<state-dir>/brun_*.json` (default
+`<tmp>/bnbloc-browser/runs`, a place the agent sandbox allows), one call
+at a time per run (a file lock). Downloads finish into
+`<tmp>/bnbloc-browser/downloads` and move to the workspace's
+`downloads/`, so the turn publishes them to the room like any other
+deliverable; the run stops at `download` with the file's name.
+
+## Tests
+
+- `step_test.go`, `run_test.go` — the action space, the request, every
+  checkpoint, confirmation by a newer turn, owner and requester, saved
+  runs, against a fake page and a fake relay.
+- `cdp_test.go` — the transport against a fake DevTools socket.
+- `chrome_test.go` — the executor on a real headless Chrome against
+  `testdata/fixture.html` (skipped when no Chrome is installed, or in
+  `-short`; `BNBLOC_BROWSER_CHROME` names one).

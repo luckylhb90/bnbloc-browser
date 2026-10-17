@@ -1,0 +1,351 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+)
+
+// The browser host: the member's dedicated, visible Chrome profile
+// (docs/prd/2026-10-17-browser-component.md §2.2). The executor only
+// speaks CDP to a loopback endpoint; where that endpoint comes from:
+//
+//  1. --endpoint / BNBLOC_BROWSER_ENDPOINT: an http://127.0.0.1:<port>
+//     DevTools address or a ws:// URL, named by whoever runs the browser;
+//  2. the endpoint file (--endpoint-file / BNBLOC_BROWSER_ENDPOINT_FILE,
+//     default <temp>/bnbloc-browser/endpoint.json) that `bnbloc-browser
+//     launch` writes: the desktop supervises that launcher as the
+//     package's sidecar, so the browser lives outside any agent's
+//     confinement and outlives sessions;
+//  3. otherwise the component launches the same browser itself, detached
+//     (a member running the bridge without the desktop).
+//
+// Every session's component attaches to the one browser; each run gets
+// its own tab.
+
+// hostConfig is where the browser is found or how it is started.
+type hostConfig struct {
+	Endpoint     string
+	EndpointFile string
+	Profile      string
+	Chrome       string
+	Headless     bool
+}
+
+// defaultEndpointFile is the launcher's endpoint file: a temp directory,
+// which a confined agent's tools may read (cmd/bnbloc-vmexec's temp dirs).
+func defaultEndpointFile() string {
+	return filepath.Join(os.TempDir(), "bnbloc-browser", "endpoint.json")
+}
+
+// defaultProfile is the dedicated profile a self-launched browser uses
+// (the desktop passes its own data directory's).
+func defaultProfile() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "bnbloc-browser", "profile")
+}
+
+// endpointRecord is the endpoint file's content.
+type endpointRecord struct {
+	URL string `json:"url"`
+	PID int    `json:"pid"`
+}
+
+// localHost connects to the member's browser, once per process.
+type localHost struct {
+	cfg hostConfig
+	dl  string // the browser's download directory (downloads.go)
+
+	mu   sync.Mutex
+	conn *cdpConn
+	// downloads tracks each download the browser announced: its frame and
+	// suggested name, until it completes.
+	downloads map[string]downloadStart
+}
+
+func newLocalHost(cfg hostConfig) *localHost {
+	if cfg.EndpointFile == "" {
+		cfg.EndpointFile = defaultEndpointFile()
+	}
+	if cfg.Profile == "" {
+		cfg.Profile = defaultProfile()
+	}
+	return &localHost{cfg: cfg, dl: filepath.Join(os.TempDir(), "bnbloc-browser", "downloads"), downloads: map[string]downloadStart{}}
+}
+
+// connect answers the live connection, (re)establishing it.
+func (h *localHost) connect(ctx context.Context) (*cdpConn, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.conn != nil {
+		select {
+		case <-h.conn.closed:
+			h.conn = nil
+		default:
+			return h.conn, nil
+		}
+	}
+	var c *cdpConn
+	var err error
+	switch {
+	case h.cfg.Endpoint != "":
+		c, err = dialCDP(ctx, h.cfg.Endpoint)
+	default:
+		if rec, ok := readEndpoint(h.cfg.EndpointFile); ok {
+			c, err = dialCDP(ctx, rec.URL)
+		}
+		if c == nil {
+			var url string
+			url, err = h.launchDetached(ctx)
+			if err == nil {
+				c, err = dialCDP(ctx, url)
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(h.dl, 0o700); err == nil {
+		_ = c.call(ctx, "", "Browser.setDownloadBehavior", map[string]any{"behavior": "allowAndName", "downloadPath": h.dl, "eventsEnabled": true}, nil)
+	}
+	h.conn = c
+	return c, nil
+}
+
+// browserHost is where runs' tabs live: the member's dedicated profile
+// (localHost) or, by build order, another host behind the same executor.
+type browserHost interface {
+	// open starts a run's tab; attach reattaches it by id (errTabGone).
+	open(ctx context.Context) (tabHandle, error)
+	attach(ctx context.Context, id string) (tabHandle, error)
+	// finishedDownloads moves the run's finished downloads into dir and
+	// answers their dir-relative names.
+	finishedDownloads(tabID, dir string) []string
+}
+
+// tabHandle is one run's tab.
+type tabHandle interface {
+	browserPage
+	target() string
+	detach(ctx context.Context)
+}
+
+// open starts a run's tab.
+func (h *localHost) open(ctx context.Context) (tabHandle, error) {
+	c, err := h.connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return openTab(ctx, c)
+}
+
+// attach reattaches a run's tab by its target id.
+func (h *localHost) attach(ctx context.Context, targetID string) (tabHandle, error) {
+	c, err := h.connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return attachTab(ctx, c, targetID)
+}
+
+// readEndpoint reads a launcher's endpoint file.
+func readEndpoint(path string) (endpointRecord, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return endpointRecord{}, false
+	}
+	var rec endpointRecord
+	if json.Unmarshal(raw, &rec) != nil || rec.URL == "" {
+		return endpointRecord{}, false
+	}
+	return rec, true
+}
+
+// writeEndpoint writes the endpoint file atomically (0600).
+func writeEndpoint(path string, rec endpointRecord) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(rec)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// chromeArgs are the browser's flags: the dedicated profile, DevTools on
+// a loopback port the browser picks (it writes DevToolsActivePort into
+// the profile).
+func chromeArgs(cfg hostConfig) []string {
+	args := []string{
+		"--user-data-dir=" + cfg.Profile,
+		"--remote-debugging-port=0",
+		"--no-first-run",
+		"--no-default-browser-check",
+	}
+	if cfg.Headless {
+		args = append(args, "--headless=new", "--window-size=1120,780")
+	}
+	return append(args, "about:blank")
+}
+
+// findChrome locates a Chrome or Chromium: the configured path, then the
+// platform's usual installs, then PATH.
+func findChrome(configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates, filepath.Join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+		}
+	case "windows":
+		for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+			if base := os.Getenv(env); base != "" {
+				candidates = append(candidates, filepath.Join(base, `Google\Chrome\Application\chrome.exe`))
+			}
+		}
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	for _, name := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
+	}
+	return "", errors.New("no Chrome or Chromium is installed on this machine (set BNBLOC_BROWSER_CHROME to its path)")
+}
+
+// startChrome starts the browser and waits for its DevTools endpoint.
+// detached keeps it running after this process exits.
+func startChrome(ctx context.Context, cfg hostConfig, detached bool) (*exec.Cmd, string, error) {
+	bin, err := findChrome(cfg.Chrome)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := os.MkdirAll(cfg.Profile, 0o700); err != nil {
+		return nil, "", fmt.Errorf("the browser profile %s: %w", cfg.Profile, err)
+	}
+	portFile := filepath.Join(cfg.Profile, "DevToolsActivePort")
+	_ = os.Remove(portFile)
+	cmd := exec.Command(bin, chromeArgs(cfg)...)
+	if detached {
+		detach(cmd)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, "", fmt.Errorf("start the browser: %w", err)
+	}
+	// Starting a browser is bounded (it either comes up or it does not);
+	// a run itself never is.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if url, ok := devToolsURL(portFile); ok {
+			return cmd, url, nil
+		}
+		select {
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			return nil, "", ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	_ = cmd.Process.Kill()
+	return nil, "", errors.New("the browser started but never opened its DevTools port")
+}
+
+// devToolsURL reads the profile's DevToolsActivePort: the port, then the
+// browser's WebSocket path.
+func devToolsURL(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	var lines []string
+	for sc.Scan() {
+		lines = append(lines, strings.TrimSpace(sc.Text()))
+	}
+	if len(lines) < 2 || lines[0] == "" || !strings.HasPrefix(lines[1], "/devtools/browser/") {
+		return "", false
+	}
+	return "ws://127.0.0.1:" + lines[0] + lines[1], true
+}
+
+// launchDetached starts the member's browser for this and later
+// sessions, unless another process already is (the endpoint file's lock).
+func (h *localHost) launchDetached(ctx context.Context) (string, error) {
+	unlock, err := lockFile(h.cfg.EndpointFile + ".lock")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if rec, ok := readEndpoint(h.cfg.EndpointFile); ok {
+		if c, err := dialCDP(ctx, rec.URL); err == nil {
+			c.close()
+			return rec.URL, nil
+		}
+	}
+	cmd, url, err := startChrome(ctx, h.cfg, true)
+	if err != nil {
+		return "", err
+	}
+	if err := writeEndpoint(h.cfg.EndpointFile, endpointRecord{URL: url, PID: cmd.Process.Pid}); err != nil {
+		return "", err
+	}
+	_ = cmd.Process.Release()
+	return url, nil
+}
+
+// runLauncher is `bnbloc-browser launch`: start the browser in the
+// foreground, publish its endpoint, and exit with it (the desktop
+// supervises this process as the package's sidecar).
+func runLauncher(ctx context.Context, cfg hostConfig) error {
+	if cfg.EndpointFile == "" {
+		cfg.EndpointFile = defaultEndpointFile()
+	}
+	if cfg.Profile == "" {
+		cfg.Profile = defaultProfile()
+	}
+	cmd, url, err := startChrome(ctx, cfg, false)
+	if err != nil {
+		return err
+	}
+	if err := writeEndpoint(cfg.EndpointFile, endpointRecord{URL: url, PID: cmd.Process.Pid}); err != nil {
+		_ = cmd.Process.Kill()
+		return err
+	}
+	defer os.Remove(cfg.EndpointFile)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = cmd.Process.Signal(os.Interrupt)
+		<-done
+		return nil
+	}
+}
