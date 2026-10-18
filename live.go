@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -30,11 +31,18 @@ const (
 	liveCaptureFor   = 2 * time.Second
 )
 
-// liveFeed is one call's live view.
+// liveFeed is one call's live view, or a paused run's that a keeper holds
+// after the call (keep.go: job, waiting and ready set).
 type liveFeed struct {
 	gw  *relay
 	tab tabHandle
 	run string
+	// job names the job the view is posted under ("" the bound turn's).
+	job string
+	// waiting is what a person does in the view (keep.go); ready reports
+	// whether it looks done, asked when the picture changes.
+	waiting string
+	ready   func(ctx context.Context) bool
 
 	mu         sync.Mutex
 	controller string
@@ -42,16 +50,21 @@ type liveFeed struct {
 	view       viewport
 	seq        int64
 	last       [32]byte // the last posted picture's hash (the loop's)
+	posted     time.Time
+	isReady    bool
+	// closed: the owner closed the view from the room (LiveInputClose).
+	closed bool
 
-	stop chan struct{}
-	done chan struct{}
+	stop     chan struct{}
+	stopOnce sync.Once
+	done     chan struct{}
 }
 
 // startLive begins the call's live view on tb; stop ends it. A relay that
 // refuses live frames (an older gateway, no running turn) ends it quietly:
 // the run works the same without one.
 func startLive(gw *relay, tb tabHandle, run string) *liveFeed {
-	f := &liveFeed{gw: gw, tab: tb, run: run, stop: make(chan struct{}), done: make(chan struct{})}
+	f := newFeed(gw, tb, run)
 	// The first frame goes before the run's first step: the room sees the
 	// page at once, and a person already in control holds the run.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -65,12 +78,19 @@ func startLive(gw *relay, tb tabHandle, run string) *liveFeed {
 	return f
 }
 
+// newFeed is a feed not yet started. Its frames count on from the clock,
+// so a later feed of the run (a keeper, the next call) never posts a lower
+// sequence than an earlier one.
+func newFeed(gw *relay, tb tabHandle, run string) *liveFeed {
+	return &liveFeed{gw: gw, tab: tb, run: run, seq: time.Now().UnixMilli(), stop: make(chan struct{}), done: make(chan struct{})}
+}
+
 // end stops the feed and waits for it.
 func (f *liveFeed) end() {
 	if f == nil {
 		return
 	}
-	close(f.stop)
+	f.stopOnce.Do(func() { close(f.stop) })
 	<-f.done
 }
 
@@ -122,7 +142,9 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	cctx, cancel := context.WithTimeout(ctx, liveCaptureFor)
 	shot, view, err := capture(cctx, f.tab, liveQuality)
 	cancel()
-	post := liveFramePost{Run: f.run}
+	f.mu.Lock()
+	post := liveFramePost{Run: f.run, Waiting: f.waiting}
+	f.mu.Unlock()
 	if err == nil && shot != "" {
 		if sum := sha256.Sum256([]byte(shot)); sum != *last {
 			*last = sum
@@ -136,22 +158,58 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 		}
 	}
 	f.last = *last
-	if post.Data == "" && f.holder() == "" {
+	// A waiting view says whether what it waits for looks done, asked
+	// when the picture changes (the page moved on).
+	readyChanged := false
+	if f.ready != nil && post.Data != "" {
+		now := f.ready(ctx)
+		f.mu.Lock()
+		readyChanged, f.isReady = now != f.isReady, now
+		f.mu.Unlock()
+	}
+	f.mu.Lock()
+	post.Ready = f.isReady
+	// A waiting view posts at least every LiveKeepEverySec: the room keeps
+	// it only while posts go on.
+	keep := f.waiting != "" && time.Since(f.posted) >= component.LiveKeepEverySec*time.Second/2
+	f.mu.Unlock()
+	if post.Data == "" && f.holder() == "" && !keep && !readyChanged {
 		return f.pace(), true
 	}
-	reply, err := f.gw.liveFrame(ctx, post)
+	reply, err := f.gw.liveFrame(ctx, f.job, post)
 	var re *relayError
 	switch {
-	case errors.As(err, &re) && (re.Status == http.StatusNotFound || re.Status == http.StatusConflict || re.Status == http.StatusBadRequest):
+	case errors.As(err, &re) && refused(re.Status):
 		return 0, false
 	case err != nil:
 		return f.pace(), true
 	}
 	f.mu.Lock()
-	f.controller, f.watched = reply.Controller, reply.Watching
+	f.controller, f.watched, f.posted = reply.Controller, reply.Watching, time.Now()
 	f.mu.Unlock()
 	f.apply(ctx, reply.Input)
 	return f.pace(), true
+}
+
+// announce posts the view's picture now, saying what it waits for (the
+// call's feed, ended, at a needs_human pause): the room keeps the view
+// before the turn ends, with no gap until the keeper's first post.
+func (f *liveFeed) announce(ctx context.Context, waiting string) {
+	f.mu.Lock()
+	f.waiting, f.posted, f.last = waiting, time.Time{}, [32]byte{}
+	f.mu.Unlock()
+	last := [32]byte{}
+	_, _ = f.tick(ctx, &last)
+}
+
+// refused: the relay or the gateway will not take this view's posts (live
+// views off, the turn ended and the view does not wait, the session gone).
+func refused(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict:
+		return true
+	}
+	return false
 }
 
 // pace is how often the page is looked at: often while someone watches
@@ -189,16 +247,24 @@ type liveFramePost struct {
 	Height   int    `json:"height,omitempty"`
 	Title    string `json:"title,omitempty"`
 	URL      string `json:"url,omitempty"`
+	Waiting  string `json:"waiting,omitempty"`
+	Ready    bool   `json:"ready,omitempty"`
+	End      bool   `json:"end,omitempty"`
 }
 
-// liveFrame posts one frame (or an empty post) through the relay.
-func (g *relay) liveFrame(ctx context.Context, post liveFramePost) (component.LiveFrameReply, error) {
+// liveFrame posts one frame (or an empty post) through the relay, under
+// job (a job the session ran; "" the bound turn's).
+func (g *relay) liveFrame(ctx context.Context, job string, post liveFramePost) (component.LiveFrameReply, error) {
 	var reply component.LiveFrameReply
 	raw, err := json.Marshal(post)
 	if err != nil {
 		return reply, err
 	}
-	out, err := g.do(ctx, http.MethodPost, "/v1/live", raw)
+	path := "/v1/live"
+	if job != "" {
+		path += "?job=" + url.QueryEscape(job)
+	}
+	out, err := g.do(ctx, http.MethodPost, path, raw)
 	if err != nil {
 		return reply, err
 	}
@@ -245,6 +311,10 @@ func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput) {
 			}
 		case component.LiveInputFocus:
 			f.bringForward(ctx)
+		case component.LiveInputClose:
+			f.mu.Lock()
+			f.closed = true
+			f.mu.Unlock()
 		}
 	}
 }

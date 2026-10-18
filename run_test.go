@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -470,4 +471,145 @@ func TestResultsCarryFieldsAndOnlyALookAnImage(t *testing.T) {
 	if n := images("browser_look", map[string]any{"run": head["run"]}); n != 1 {
 		t.Fatalf("browser_look sent %d images", n)
 	}
+}
+
+// A sign-in only the person can do pauses at needs_human, never blocked:
+// the decision's NEEDS_HUMAN, or a redirect to a sign-in page off the
+// run's sites (an identity provider). The pause says what the person does,
+// the window comes forward, and the call keeps the view in the room under
+// its turn (keep.go) with the page announced as waiting.
+func TestSignInPausesForThePerson(t *testing.T) {
+	p, _, _ := expensePortal()
+	h := newHarness(t, p, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	var mu sync.Mutex
+	var posts []liveFramePost
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
+		mu.Lock()
+		defer mu.Unlock()
+		posts = append(posts, post)
+		return component.LiveFrameReply{}
+	}
+	var kept [][2]string
+	h.tools.keeper = func(run, job string) error { kept = append(kept, [2]string{run, job}); return nil }
+	head, _ := h.call("browse", map[string]any{"goal": "file an expense", "url": "https://portal.example.com/expenses/new"})
+	if head["checkpoint"] != cpNeedsHuman || !strings.Contains(head["reason"].(string), "live view") {
+		t.Fatalf("checkpoint = %v", head)
+	}
+	run := head["run"].(string)
+	if len(kept) != 1 || kept[0] != [2]string{run, "job-1"} {
+		t.Fatalf("keeper = %v", kept)
+	}
+	r, _ := h.tools.runner.store.load(run)
+	if r.PausedJob != "job-1" || r.Checkpoint.Waiting != waitSignIn || r.PausedURL == "" {
+		t.Fatalf("paused run = %+v", r)
+	}
+	mu.Lock()
+	lastPost := posts[len(posts)-1]
+	mu.Unlock()
+	if lastPost.Waiting != waitSignIn || lastPost.Data == "" {
+		t.Fatalf("the view was not announced as waiting: %+v", lastPost)
+	}
+
+	// Redirected to an identity provider's password page: the same pause,
+	// before any decision on the foreign page.
+	idp := &fakeDoc{url: "https://login.idp.example.net/authorize", title: "Sign in", text: "Sign in", key: "idp", actions: []action{
+		{Kind: "secret", Node: node(1), Role: "textbox", Label: "Password"},
+	}}
+	h2 := newHarness(t, &fakePage{doc: idp}, func(q decReq) (string, string) {
+		t.Errorf("a decision was asked on the identity provider's page")
+		return opBlocked, ""
+	})
+	head, _ = h2.call("browse", map[string]any{"goal": "file an expense", "url": "https://portal.example.com/expenses/new"})
+	if head["checkpoint"] != cpNeedsHuman {
+		t.Fatalf("redirected sign-in = %v", head)
+	}
+}
+
+// The keeper holds a paused run's view after the call: it posts under the
+// pausing turn's job saying what it waits for, marks the view ready once
+// the page moved back on the run's site with no password left, and posts
+// the view's end when the run is resumed (stopKeeper) or the owner closes
+// it from the room.
+func TestKeeperHoldsTheViewUntilResumed(t *testing.T) {
+	signIn := &fakeDoc{url: "https://login.idp.example.net/authorize", title: "Sign in", text: "Sign in", key: "idp", actions: []action{
+		{Kind: "secret", Node: node(1), Role: "textbox", Label: "Password"},
+	}}
+	page := &fakePage{doc: signIn}
+	h := newHarness(t, page, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	var mu sync.Mutex
+	var posts []liveFramePost
+	closeIt := false
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
+		mu.Lock()
+		defer mu.Unlock()
+		posts = append(posts, post)
+		if closeIt {
+			return component.LiveFrameReply{Input: []component.LiveInput{{Type: component.LiveInputClose}}}
+		}
+		return component.LiveFrameReply{}
+	}
+	h.tools.keeper = func(run, job string) error { return nil }
+	head, _ := h.call("browse", map[string]any{"goal": "file an expense", "url": "https://portal.example.com/expenses/new"})
+	run := head["run"].(string)
+	store := h.tools.runner.store
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- keep(ctx, h.tools.gw, h.host, store, run, "job-1") }()
+	waitFor := func(what string, ok func(liveFramePost) bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			for _, p := range posts {
+				if ok(p) {
+					mu.Unlock()
+					return
+				}
+			}
+			mu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("no post %s: %+v", what, posts)
+	}
+	mu.Lock()
+	posts = nil
+	mu.Unlock()
+	waitFor("waiting", func(p liveFramePost) bool { return p.Waiting == waitSignIn && !p.Ready })
+	// A second keeper of the run exits at once.
+	if err := keep(ctx, h.tools.gw, h.host, store, run, "job-1"); err != nil {
+		t.Fatalf("second keeper = %v", err)
+	}
+	// Signed in: back on the portal, no password field.
+	page.mu.Lock()
+	page.doc = &fakeDoc{url: "https://portal.example.com/expenses/new", title: "New expense", text: "New expense", key: "form"}
+	page.mu.Unlock()
+	waitFor("ready", func(p liveFramePost) bool { return p.Ready && p.Waiting != "" })
+
+	store.stopKeeper(run)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("keeper = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the keeper did not stop")
+	}
+	waitFor("end", func(p liveFramePost) bool { return p.End })
+
+	// Closed by the owner from the room.
+	mu.Lock()
+	closeIt, posts = true, nil
+	mu.Unlock()
+	page.mu.Lock()
+	page.doc = signIn
+	page.mu.Unlock()
+	go func() { done <- keep(ctx, h.tools.gw, h.host, store, run, "job-1") }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the keeper did not stop on close")
+	}
+	waitFor("end after close", func(p liveFramePost) bool { return p.End })
 }

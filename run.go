@@ -63,8 +63,13 @@ type runState struct {
 	Checkpoint *checkpoint `json:"checkpoint,omitempty"`
 	// PausedAtSeq is the message sequence of the turn the run paused in,
 	// for a checkpoint only a newer turn of the requester may answer.
-	PausedAtSeq int64           `json:"pausedAtSeq,omitempty"`
-	History     []historyRecord `json:"history"`
+	PausedAtSeq int64 `json:"pausedAtSeq,omitempty"`
+	// PausedJob is that turn's job: a needs_human pause keeps its live
+	// view under it after the turn (keep.go).
+	PausedJob string `json:"pausedJob,omitempty"`
+	// PausedURL is the page the run paused on.
+	PausedURL string          `json:"pausedUrl,omitempty"`
+	History   []historyRecord `json:"history"`
 	// Unchanged counts consecutive executed steps that changed nothing.
 	Unchanged   int   `json:"unchanged"`
 	Decisions   int   `json:"decisions"`
@@ -98,6 +103,9 @@ type checkpoint struct {
 	Site string `json:"site,omitempty"`
 	// Artifacts are the room files a download published.
 	Artifacts []string `json:"artifacts,omitempty"`
+	// Waiting is what the person does in the live view (needs_human),
+	// in their words; the room shows it.
+	Waiting string `json:"waiting,omitempty"`
 	// pending is the step decided before the pause, run when it is answered
 	// (a confirmed click, a supplied value, an allowed site).
 	Pending *pendingStep `json:"pending,omitempty"`
@@ -261,6 +269,11 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 		if err != nil {
 			return nil, err
 		}
+		if !r.onSite(pg.URL) && hasSecret(pg) {
+			// A redirect to a sign-in elsewhere (an identity provider):
+			// the person signs in, and the redirect brings the run back.
+			return waitForPerson(nil, waitSignIn), nil
+		}
 		if !r.onSite(pg.URL) {
 			return &checkpoint{Kind: cpLeavingSite, Site: siteOf(pg.URL), Reason: "the page is now on " + siteOf(pg.URL) + ", outside the run's sites; ask the person who asked you whether to continue there"}, nil
 		}
@@ -304,7 +317,9 @@ func (rn *runner) step(ctx context.Context, r *runState, p browserPage, pg *page
 	case opUpload:
 		return &checkpoint{Kind: cpUpload, Element: elementOf(d.Action), Reason: "the page asks for a file; uploading sends a room file to this site, so the person who asked you chooses it and agrees first", Pending: pending(d, pg)}, nil
 	case opSecret:
-		return &checkpoint{Kind: cpNeedsHuman, Element: elementOf(d.Action), Reason: "a password or secret field needs filling; a person types it in the browser window (it never passes through you or the model)"}, nil
+		return waitForPerson(elementOf(d.Action), waitSecret), nil
+	case opNeedsHuman:
+		return waitForPerson(nil, waitSignIn), nil
 	case opTypeText:
 		text, ok := r.valueFor(d.Action)
 		if !ok {
@@ -396,6 +411,29 @@ func (rn *runner) resumePending(ctx context.Context, r *runState, p browserPage,
 		return errStale // decided on another page: the loop decides again
 	}
 	return rn.execute(ctx, r, p, pg, decision{Operation: ps.Operation, Action: ps.Action, Confidence: ps.Confidence}, text)
+}
+
+// What a needs_human pause asks of the person (checkpoint.Waiting).
+const (
+	waitSecret = "Type the password in the page, then let the agent continue"
+	waitSignIn = "Finish signing in on the page, then let the agent continue"
+)
+
+// waitForPerson is a needs_human pause: the person does it in the live
+// view in the room (or the browser window), and the run waits for them.
+func waitForPerson(el *checkpointElement, waiting string) *checkpoint {
+	return &checkpoint{Kind: cpNeedsHuman, Element: el, Waiting: waiting,
+		Reason: "only the person can do this step (a sign-in, a password, a second factor); it never passes through you or the model. They do it in the live view in the room, which stays open for them; resume the run with reply once they say they are done"}
+}
+
+// hasSecret reports a password or other secret field on the page.
+func hasSecret(pg *page) bool {
+	for _, a := range pg.Actions {
+		if a.Kind == "secret" {
+			return true
+		}
+	}
+	return false
 }
 
 func pending(d decision, pg *page) *pendingStep {

@@ -51,6 +51,9 @@ var toolLook = map[string]any{
 type tools struct {
 	gw     *relay
 	runner *runner
+	// keeper starts the keeper of a run paused for a person, under the
+	// pausing turn's job (keep.go); nil keeps no view after the call.
+	keeper func(run, job string) error
 }
 
 // errNotRequester: a run is resumed only by the turns of the person it
@@ -136,6 +139,9 @@ func (t *tools) resume(ctx context.Context, args json.RawMessage) (any, *rpcErro
 	if sess.Requester != r.Requester {
 		return nil, toolFailure(errNotRequester)
 	}
+	// The view kept for the person (keep.go) ends: this call shows the run
+	// under its own turn.
+	t.runner.store.stopKeeper(r.ID)
 	tb, err := t.runner.host.attach(ctx, r.Tab)
 	if err != nil {
 		if errors.Is(err, errTabGone) {
@@ -245,15 +251,24 @@ func (t *tools) drive(ctx context.Context, r *runState, tb tabHandle, sess compo
 			return nil, toolFailure(err)
 		}
 	}
-	r.Checkpoint, r.PausedAtSeq = cp, sess.MessageSeq
+	r.Checkpoint, r.PausedAtSeq, r.PausedJob = cp, sess.MessageSeq, sess.JobID
+	if pg, err := observe(ctx, tb); err == nil {
+		r.PausedURL = pg.URL
+	}
 	if err := t.runner.store.save(r); err != nil {
 		return nil, toolFailure(err)
 	}
-	// The window lives in the background (§2.8); when only a person at
-	// this machine can go on (a password), it comes forward for them.
 	if cp.Kind == cpNeedsHuman {
+		// Only the person can go on: the view stays in the room for them
+		// (keep.go), announced now while the turn still runs, and the
+		// window comes forward on this machine too.
+		live.end()
+		live.announce(ctx, cp.Waiting)
 		if w, ok := tb.(interface{ bringForward(context.Context) error }); ok {
 			_ = w.bringForward(ctx)
+		}
+		if t.keeper != nil {
+			_ = t.keeper(r.ID, sess.JobID)
 		}
 	}
 	return t.result(ctx, r, tb, cp, "", false), nil

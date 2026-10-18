@@ -24,6 +24,9 @@ const (
 	opSecret   = "FILL_SECRET"
 	opDone     = "DONE"
 	opBlocked  = "BLOCKED"
+	// opNeedsHuman: only the person can go on (a sign-in, a second factor);
+	// the run waits in the live view for them.
+	opNeedsHuman = "NEEDS_HUMAN"
 )
 
 // kindOps maps an observed control's kind to its operation.
@@ -165,9 +168,10 @@ func stepRequest(model string, pg *page, goal string, history []historyEntry) (m
 		operations[key] = controls[key].Label
 		opKeys = append(opKeys, key)
 	}
+	operations[opNeedsHuman] = "Only the person can go on here: signing in or choosing an account, a second factor or code, a captcha, or a sign-in page still loading or blank."
 	operations[opDone] = "Every requirement is visibly satisfied."
-	operations[opBlocked] = "No supported operation can progress."
-	opKeys = append(opKeys, opDone, opBlocked)
+	operations[opBlocked] = "No supported operation can progress, and the person signing in or confirming would not help."
+	opKeys = append(opKeys, opNeedsHuman, opDone, opBlocked)
 
 	questions := orderedMap{}
 	questions.set("operation", map[string]any{

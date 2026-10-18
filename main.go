@@ -16,6 +16,8 @@
 //	bnbloc-browser launch [flags]   start the dedicated browser in the
 //	                                foreground and publish its endpoint (the
 //	                                desktop runs this as the package's sidecar)
+//	bnbloc-browser keep [flags]     hold a paused run's live view after its
+//	                                call (keep.go; the server starts it)
 package main
 
 import (
@@ -36,7 +38,8 @@ import (
 func main() {
 	args := os.Args[1:]
 	launch := len(args) > 0 && args[0] == "launch"
-	if launch {
+	keeping := len(args) > 0 && args[0] == "keep"
+	if launch || keeping {
 		args = args[1:]
 	}
 	fs := flag.NewFlagSet("bnbloc-browser", flag.ExitOnError)
@@ -49,6 +52,8 @@ func main() {
 	budget := fs.Duration("call-budget", 45*time.Second, "how long one tool call works before it answers `running`")
 	stateDir := fs.String("state-dir", os.Getenv("BNBLOC_BROWSER_STATE_DIR"), "where runs are kept")
 	model := fs.String("model", "", "the decision model to ask (default: the provider's)")
+	keepRun := fs.String("run", "", "keep: the paused run")
+	keepJob := fs.String("job", "", "keep: the job its view is posted under")
 	_ = fs.Parse(args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -71,9 +76,20 @@ func main() {
 	if *stateDir == "" {
 		*stateDir = filepath.Join(os.TempDir(), "bnbloc-browser", "runs")
 	}
+	store := runStore{dir: *stateDir}
+	if keeping {
+		if err := keep(ctx, gw, newLocalHost(cfg), store, *keepRun, *keepJob); err != nil {
+			fmt.Fprintln(os.Stderr, "bnbloc-browser keep:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cwd, _ := os.Getwd()
-	t := &tools{gw: gw, runner: &runner{model: *model, dec: gw, host: newLocalHost(cfg), store: runStore{dir: *stateDir},
+	t := &tools{gw: gw, runner: &runner{model: *model, dec: gw, host: newLocalHost(cfg), store: store,
 		downloads: filepath.Join(cwd, "downloads"), budget: *budget, now: time.Now}}
+	if exe, err := os.Executable(); err == nil {
+		t.keeper = func(run, job string) error { return startKeeper(exe, args, store, run, job) }
+	}
 	if err := serve(ctx, t, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "bnbloc-browser:", err)
 		os.Exit(1)

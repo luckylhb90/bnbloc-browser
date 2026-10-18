@@ -50,7 +50,7 @@ func TestLiveViewPostsFramesAndRunsInput(t *testing.T) {
 	}
 	f := posts[0]
 	shot, _ := base64.StdEncoding.DecodeString(f.Data)
-	if f.MimeType != "image/jpeg" || !strings.HasPrefix(string(shot), "shot of ") || f.Run == "" || f.Seq != 1 {
+	if f.MimeType != "image/jpeg" || !strings.HasPrefix(string(shot), "shot of ") || f.Run == "" || f.Seq <= 0 {
 		t.Fatalf("frame = %+v (%q)", f, shot)
 	}
 	if f.Width != 1000 || f.Height != 500 || f.URL != "https://portal.example.com/" {

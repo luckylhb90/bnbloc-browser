@@ -30,6 +30,8 @@ turn gets every MCP tool its requester installed, with no skill pack
   - `downloads.go` — finished downloads into the workspace.
   - `relay.go` — the relay calls.
   - `live.go` — the live view: frames out, a viewer's input in.
+  - `keep.go` — the keeper: a run paused for a person keeps its view in
+    the room after the call.
   - `snapshot.js` — the page reader, a modified port of browser-use's
     jev-ultrafast (MIT, `NOTICE`).
 - In bnbloc (the platform, all generic): `component.RelaySession` and the
@@ -77,8 +79,10 @@ at most 1024 wide: an image costs the agent far more than the text.
    element and its guard scope; at or above the run's threshold (default
    0.3; a refused answer counts as 1) the run stops at
    `needs_confirmation`. A typed value comes from `values` by label or
-   description containment, else `needs_input`. A secret is
-   `needs_human`. A link off the run's sites (registrable domains,
+   description containment, else `needs_input`. A secret, or the
+   decision's `NEEDS_HUMAN` (a sign-in, a second factor, a captcha, a
+   blank sign-in redirect), is `needs_human`; so is a password page off
+   the run's sites (an identity provider), before any decision there. A link off the run's sites (registrable domains,
    `publicsuffix`), or a page that has landed off them, is
    `leaving_site`. A file input is `upload`. A paused step is kept and
    executed as decided once the checkpoint is answered.
@@ -117,6 +121,17 @@ the channel a `job_live_frame` event without the image; a viewer fetches
   window still renders captures (a minimized one does not, so it is
   restored, never minimized). "Open in the browser window" and a `needs_human`
   checkpoint bring it forward.
+- **Waiting for a person** (bnbloc PRD §3.7). At a `needs_human` pause the
+  call posts the view saying what the person does (`waiting`) before it
+  returns, then starts `bnbloc-browser keep --run <id> --job <turn's job>`,
+  detached. The keeper posts the paused tab under that job (the relay's
+  `?job=`, a job of the session), at least every 10 s, runs the owner's
+  input, says `ready` once the page is back on the run's site with no
+  password field, and posts `end` when the run is resumed (the resuming
+  call writes `<run>.keep.stop` and waits for it), the owner closes the
+  view, the tab is gone, or the relay refuses it. One keeper per run
+  (`<run>.keep.lock`); its log is `<run>.keep.log`. The room opens the view
+  in its owner's sidebar, takes control for them, and offers Continue.
 
 ## Who may run it, and who confirms
 
