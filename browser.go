@@ -312,13 +312,30 @@ func navigate(ctx context.Context, p browserPage, url string) error {
 	return nil // a slow page is observed as it is; the loop waits on it
 }
 
-// screenshot captures the tab as JPEG (base64).
+// screenshot captures the tab's viewport as JPEG (base64) at one image
+// pixel per CSS pixel, at most maxShotWidth wide: a high-density screen
+// would otherwise double each side, and every pixel costs the agent tokens.
 func screenshot(ctx context.Context, p browserPage) (string, error) {
+	var view struct {
+		W, H, DPR float64
+	}
+	_ = evaluate(ctx, p, "({W: innerWidth, H: innerHeight, DPR: devicePixelRatio})", &view)
+	params := map[string]any{"format": "jpeg", "quality": 60}
+	if view.W > 0 && view.H > 0 && view.DPR > 0 {
+		scale := 1 / view.DPR
+		if view.W > maxShotWidth {
+			scale = maxShotWidth / view.W / view.DPR
+		}
+		params["clip"] = map[string]any{"x": 0, "y": 0, "width": view.W, "height": view.H, "scale": scale}
+	}
 	var shot struct {
 		Data string `json:"data"`
 	}
-	if err := p.call(ctx, "Page.captureScreenshot", map[string]any{"format": "jpeg", "quality": 72}, &shot); err != nil {
+	if err := p.call(ctx, "Page.captureScreenshot", params, &shot); err != nil {
 		return "", err
 	}
 	return shot.Data, nil
 }
+
+// maxShotWidth bounds a screenshot's width in image pixels.
+const maxShotWidth = 1024

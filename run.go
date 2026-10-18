@@ -243,7 +243,7 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 			return cp, nil
 		}
 		if r.Unchanged >= stallSteps {
-			return &checkpoint{Kind: cpBlocked, Reason: fmt.Sprintf("the last %d steps changed nothing on the page; read it with browser_look and resume with a new instruction", stallSteps)}, nil
+			return &checkpoint{Kind: cpBlocked, Reason: fmt.Sprintf("the last %d steps changed nothing on the page; read the page below and resume with a new instruction", stallSteps)}, nil
 		}
 	}
 }
@@ -266,9 +266,9 @@ func (rn *runner) step(ctx context.Context, r *runState, p browserPage, pg *page
 		if ok, err := fresh(ctx, p, pg, nil); err != nil || !ok {
 			return nil, errStale
 		}
-		return &checkpoint{Kind: cpDone, Reason: "the decision model judged the goal visibly met; check the page with browser_look before you report it"}, nil
+		return &checkpoint{Kind: cpDone, Reason: "the decision model judged the goal visibly met; check the page and fields below before you report it"}, nil
 	case opBlocked:
-		return &checkpoint{Kind: cpBlocked, Reason: "the decision model found no operation that makes progress here; read the page with browser_look and resume with a new instruction"}, nil
+		return &checkpoint{Kind: cpBlocked, Reason: "the decision model found no operation that makes progress here; read the page below and resume with a new instruction"}, nil
 	case opUpload:
 		return &checkpoint{Kind: cpUpload, Element: elementOf(d.Action), Reason: "the page asks for a file; uploading sends a room file to this site, so the person who asked you chooses it and agrees first", Pending: pending(d, pg)}, nil
 	case opSecret:

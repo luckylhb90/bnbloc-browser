@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,6 +125,15 @@ func TestExecutorOnChrome(t *testing.T) {
 	shot, err := screenshot(ctx, tb)
 	if err != nil || len(shot) < 100 {
 		t.Fatalf("screenshot = %d bytes %v", len(shot), err)
+	}
+	// One image pixel per CSS pixel, whatever the screen's density.
+	if raw, _ := base64.StdEncoding.DecodeString(shot); len(raw) > 0 {
+		cfg, err := jpeg.DecodeConfig(bytes.NewReader(raw))
+		var w float64
+		_ = evaluate(ctx, tb, "innerWidth", &w)
+		if err != nil || float64(cfg.Width) != min(w, maxShotWidth) {
+			t.Fatalf("screenshot %dx%d for a %v-wide viewport: %v", cfg.Width, cfg.Height, w, err)
+		}
 	}
 
 	// A password field is observed by label, never by value.

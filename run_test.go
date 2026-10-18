@@ -428,3 +428,46 @@ func TestMCPSurface(t *testing.T) {
 		t.Fatalf("a file url = %s", msg)
 	}
 }
+
+// A checkpoint's result carries the fields as they are filled now (the
+// page text has only their labels) and no image; a look adds the
+// screenshot. A secret field says only whether it is filled.
+func TestResultsCarryFieldsAndOnlyALookAnImage(t *testing.T) {
+	form := &fakeDoc{url: "https://shop.example.com/order", title: "Order", text: "Name\nSize", key: "f", actions: []action{
+		{Kind: "fill", Node: node(1), Role: "textbox", Label: "Name", Value: "Maya Test"},
+		{Kind: "click", Node: node(1), Role: "textbox", Label: "Open Name", Value: "Maya Test"},
+		{Kind: "select", Node: node(2), Role: "combobox", Label: "Size → Large", Value: "l", CurrentValue: "Medium"},
+		{Kind: "click", Node: node(3), Role: "checkbox", Label: "Bacon", Checked: "true"},
+		{Kind: "secret", Node: node(4), Role: "textbox", Label: "Password", Filled: true},
+		{Kind: "fill", Node: node(5), Role: "textbox", Label: "Notes"},
+	}}
+	h := newHarness(t, &fakePage{doc: form}, func(decReq) (string, string) { return opDone, "" })
+	head, text := h.call("browse", map[string]any{"goal": "order", "url": form.url})
+	if head["checkpoint"] != cpDone {
+		t.Fatalf("head = %v", head)
+	}
+	want := "Fields as filled now:\n- Name: \"Maya Test\"\n- Size: \"Medium\"\n- Bacon (checkbox): checked\n- Password: (filled)\n- Notes: (empty)"
+	if !strings.Contains(text, want) {
+		t.Fatalf("text = %s", text)
+	}
+	images := func(name string, args map[string]any) int {
+		raw, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
+		res, rerr := h.tools.dispatch(context.Background(), "tools/call", raw)
+		if rerr != nil {
+			t.Fatal(rerr.Message)
+		}
+		n := 0
+		for _, c := range res.(map[string]any)["content"].([]any) {
+			if c.(map[string]any)["type"] == "image" {
+				n++
+			}
+		}
+		return n
+	}
+	if n := images("browse", map[string]any{"run": head["run"]}); n != 0 {
+		t.Fatalf("browse sent %d images", n)
+	}
+	if n := images("browser_look", map[string]any{"run": head["run"]}); n != 1 {
+		t.Fatalf("browser_look sent %d images", n)
+	}
+}

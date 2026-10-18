@@ -41,11 +41,15 @@ turn gets every MCP tool its requester installed, with no skill pack
 |---|---|
 | `browse {goal, url, values?, threshold?}` | opens `url` in a new tab and runs to a checkpoint |
 | `browse {run, value?, confirmed?, file?, reply?}` | with a run id: resumes that run from its checkpoint |
-| `browser_look {run}` | the run's page: a screenshot and its visible text |
+| `browser_look {run}` | the run's page: a screenshot with its text and fields |
 
-A result is one JSON head (`run`, `checkpoint`, `site`, `url`, `title`,
-`summary`, the element in question), the page's visible text fenced by
-`roomlog.Fence` as data from the site, and a JPEG screenshot.
+A result is one JSON head (`run`, `checkpoint`, `site`, `reason`, the
+element in question), then, fenced by `roomlog.Fence` as data from the
+site, the page's visible text and its fields as filled now (a text
+field's value, a box's state, a select's option; a secret only as filled
+or empty), which the visible text alone does not show. Only
+`browser_look` adds a JPEG screenshot, one image pixel per CSS pixel and
+at most 1024 wide: an image costs the agent far more than the text.
 
 ## A step
 
