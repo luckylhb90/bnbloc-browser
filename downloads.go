@@ -32,7 +32,7 @@ func (rn *runner) collectDownloads(r *runState) *checkpoint {
 	}
 	sortStrings(saved)
 	return &checkpoint{Kind: cpDownload, Artifacts: saved,
-		Reason: "downloaded " + strings.Join(saved, ", ") + " into your workspace; it becomes a room file with this turn's files. Resume with browse_continue to keep going"}
+		Reason: "downloaded " + strings.Join(saved, ", ") + " into your workspace; it becomes a room file with this turn's files. Resume the run to keep going"}
 }
 
 // finishedDownloads reads the browser's download events and moves the

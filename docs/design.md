@@ -3,7 +3,9 @@
 Design: [docs/prd/2026-10-17-browser-component.md](../prd/2026-10-17-browser-component.md).
 
 A room agent operates web pages in a dedicated, visible Chrome profile on
-the machine it runs on, signed in as that machine's owner. The agent states
+the machine of the person who asked, signed in as them (PRD §3.6; until
+calls are routed to the requester's machine, a turn whose agent is
+someone else's answers `needs_human`). The agent states
 a goal and the values to type; the component works the page one step at a
 time, and stops at a checkpoint whenever a person has to say something.
 
@@ -11,12 +13,14 @@ It is an installable MCP tool component (`packages/browser/package.json`,
 binary `cmd/bnbloc-browser`), `credentials: "room"`: it reaches the
 gateway only through the room relay, as the person the agent is answering.
 The platform gives it two generic things (§3.1, §3.5 of the PRD); nothing
-else in the platform knows it exists.
+else in the platform knows it exists. Installing it is the switch: a
+turn gets every MCP tool its requester installed, with no skill pack
+(`mcptool.Resolve`, PRD §3.6).
 
 ## Owners
 
 - `cmd/bnbloc-browser`:
-  - `tools.go` — the three tools, their wording, owner and requester
+  - `tools.go` — the two tools, their wording, owner and requester
     checks, consent, the result shape.
   - `run.go` — the run loop, checkpoints, saved runs.
   - `step.go` — the action space and the decision request.
@@ -36,7 +40,7 @@ else in the platform knows it exists.
 | Tool | What |
 |---|---|
 | `browse {goal, url, values?, threshold?}` | opens `url` in a new tab and runs to a checkpoint |
-| `browse_continue {run, reply?, value?, confirmed?, file?}` | resumes a run from its checkpoint |
+| `browse {run, value?, confirmed?, file?, reply?}` | with a run id: resumes that run from its checkpoint |
 | `browser_look {run}` | the run's page: a screenshot and its visible text |
 
 A result is one JSON head (`run`, `checkpoint`, `site`, `url`, `title`,
@@ -89,8 +93,8 @@ a run's length (`no-fixed-time-limits`).
 - A run starts only for the owner's own requests. Another member's
   request returns `needs_human` asking the owner to let them use the
   browser; the grant itself is slice 3.
-- A run's requester is fixed when it starts. `browse_continue` from a
-  turn of anyone else is refused.
+- A run's requester is fixed when it starts. Resuming it from a turn of
+  anyone else is refused.
 - A confirmation (`confirmed: true` on `needs_confirmation`,
   `leaving_site`, `upload`) holds only when the current turn is the
   requester's own message and newer than the one the run paused on

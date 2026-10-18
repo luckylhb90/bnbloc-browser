@@ -121,7 +121,7 @@ func (t *tools) dispatch(ctx context.Context, method string, params json.RawMess
 	case "notifications/initialized", "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		return map[string]any{"tools": []any{toolBrowse, toolContinue, toolLook}}, nil
+		return map[string]any{"tools": []any{toolBrowse, toolLook}}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -136,8 +136,6 @@ func (t *tools) dispatch(ctx context.Context, method string, params json.RawMess
 		switch p.Name {
 		case "browse":
 			return t.browse(ctx, p.Arguments)
-		case "browse_continue":
-			return t.browseContinue(ctx, p.Arguments)
 		case "browser_look":
 			return t.look(ctx, p.Arguments)
 		default:

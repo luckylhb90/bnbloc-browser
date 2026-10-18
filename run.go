@@ -22,7 +22,7 @@ import (
 // jev-ultrafast's agent.py (NOTICE): observe, decide (one SystemOne call:
 // the operation and every operation's target), execute, observe again.
 // Instead of the demo's exceptions every pause is a checkpoint the agent
-// resumes with browse_continue. A run never ends for time or a step count:
+// resumes with browse(run). A run never ends for time or a step count:
 // it stops when the page stops changing (no progress) and waits at a
 // checkpoint for as long as nobody answers.
 
@@ -217,7 +217,7 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 	deadline := rn.now().Add(rn.budget)
 	for {
 		if rn.now().After(deadline) {
-			return &checkpoint{Kind: cpRunning, Reason: "still working; call browse_continue with an empty reply to keep going"}, nil
+			return &checkpoint{Kind: cpRunning, Reason: "still working; resume the run to keep going"}, nil
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err

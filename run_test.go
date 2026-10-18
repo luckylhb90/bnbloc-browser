@@ -120,13 +120,13 @@ func TestRunConfirmsByANewerTurn(t *testing.T) {
 	run := head["run"].(string)
 
 	// The same turn: an agent persuaded the person "already agreed".
-	head, _ = h.call("browse_continue", map[string]any{"run": run, "confirmed": true})
+	head, _ = h.call("browse", map[string]any{"run": run, "confirmed": true})
 	if head["checkpoint"] != cpNeedsConfirmation || !strings.Contains(head["note"].(string), "has not answered") {
 		t.Fatalf("same-turn confirmation = %v", head)
 	}
 	// A newer turn, but a schedule's post, not the person.
 	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: false})
-	head, _ = h.call("browse_continue", map[string]any{"run": run, "confirmed": true})
+	head, _ = h.call("browse", map[string]any{"run": run, "confirmed": true})
 	if head["checkpoint"] != cpNeedsConfirmation {
 		t.Fatalf("a scheduled turn confirmed it: %v", head)
 	}
@@ -135,7 +135,7 @@ func TestRunConfirmsByANewerTurn(t *testing.T) {
 	}
 	// maya answers in the room: a newer turn she opened.
 	h.relay.bind(wire.RoomRelaySession{JobID: "job-3", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 12, ByRequester: true})
-	head, text = h.call("browse_continue", map[string]any{"run": run, "confirmed": true})
+	head, text = h.call("browse", map[string]any{"run": run, "confirmed": true})
 	if head["checkpoint"] != cpDone || countClicks(p, 3) != 1 {
 		t.Fatalf("after maya's answer = %v (submit clicks %d)", head, countClicks(p, 3))
 	}
@@ -170,16 +170,16 @@ func TestNeedsInputAndDecline(t *testing.T) {
 		t.Fatalf("no value = %v typed %v", head, p.typed)
 	}
 	run := head["run"].(string)
-	if head, _ = h.call("browse_continue", map[string]any{"run": run}); head["checkpoint"] != cpNeedsInput {
+	if head, _ = h.call("browse", map[string]any{"run": run}); head["checkpoint"] != cpNeedsInput {
 		t.Fatalf("resumed without the value = %v", head)
 	}
-	head, _ = h.call("browse_continue", map[string]any{"run": run, "value": "88"})
+	head, _ = h.call("browse", map[string]any{"run": run, "value": "88"})
 	if head["checkpoint"] != cpNeedsConfirmation || len(p.typed) != 1 || p.typed[0] != "88" {
 		t.Fatalf("with the value = %v typed %v", head, p.typed)
 	}
 	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 20, ByRequester: true})
 	h.model.script = func(q decReq) (string, string) { return opBlocked, "" }
-	head, _ = h.call("browse_continue", map[string]any{"run": run, "confirmed": false})
+	head, _ = h.call("browse", map[string]any{"run": run, "confirmed": false})
 	if head["checkpoint"] != cpBlocked || countClicks(p, 3) != 0 {
 		t.Fatalf("declined = %v", head)
 	}
@@ -249,7 +249,7 @@ func TestLeavingSite(t *testing.T) {
 		t.Fatalf("leaving = %v", head)
 	}
 	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
-	head, _ = h.call("browse_continue", map[string]any{"run": head["run"], "confirmed": true})
+	head, _ = h.call("browse", map[string]any{"run": head["run"], "confirmed": true})
 	if head["checkpoint"] != cpDone || len(p.clicks) != 1 {
 		t.Fatalf("after yes = %v clicks %v", head, p.clicks)
 	}
@@ -290,11 +290,11 @@ func TestSecretsAndUploads(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(wd) })
 	_ = os.WriteFile(filepath.Join(work, "receipt.pdf"), []byte("%PDF"), 0o600)
 	h2.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
-	head, _ = h2.call("browse_continue", map[string]any{"run": run, "confirmed": true, "file": "../../etc/passwd"})
+	head, _ = h2.call("browse", map[string]any{"run": run, "confirmed": true, "file": "../../etc/passwd"})
 	if head["checkpoint"] != cpUpload || !strings.Contains(head["note"].(string), "workspace") || len(p2.files) != 0 {
 		t.Fatalf("a file outside the workspace = %v", head)
 	}
-	head, _ = h2.call("browse_continue", map[string]any{"run": run, "confirmed": true, "file": "receipt.pdf"})
+	head, _ = h2.call("browse", map[string]any{"run": run, "confirmed": true, "file": "receipt.pdf"})
 	if head["checkpoint"] != cpDone || len(p2.files) != 1 || filepath.Base(p2.files[0]) != "receipt.pdf" {
 		t.Fatalf("upload done = %v files %v", head, p2.files)
 	}
@@ -314,7 +314,7 @@ func TestOwnerAndRequester(t *testing.T) {
 	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 6, ByRequester: true})
 	head, _ = h.call("browse", map[string]any{"goal": "g", "url": "https://portal.example.com/expenses/new"})
 	h.relay.bind(wire.RoomRelaySession{JobID: "job-3", RoomID: "room-1", Requester: "jack", Owner: "maya", MessageSeq: 7, ByRequester: true})
-	if msg := h.callErr("browse_continue", map[string]any{"run": head["run"]}); !strings.Contains(msg, "acts for someone else") {
+	if msg := h.callErr("browse", map[string]any{"run": head["run"]}); !strings.Contains(msg, "acts for someone else") {
 		t.Fatalf("another requester resumed it: %s", msg)
 	}
 }
@@ -334,12 +334,12 @@ func TestRunStateAndDecisionsOff(t *testing.T) {
 		t.Fatal("a path loaded as a run")
 	}
 	h.model.off = true
-	head, _ = h.call("browse_continue", map[string]any{"run": run, "reply": "try again"})
+	head, _ = h.call("browse", map[string]any{"run": run, "reply": "try again"})
 	if head["checkpoint"] != cpBlocked || !strings.Contains(head["reason"].(string), "decisions are off") {
 		t.Fatalf("decisions off = %v", head)
 	}
 	delete(h.host.pages, "tab-1")
-	if msg := h.callErr("browse_continue", map[string]any{"run": run}); !strings.Contains(msg, "tab is closed") {
+	if msg := h.callErr("browse", map[string]any{"run": run}); !strings.Contains(msg, "tab is closed") {
 		t.Fatalf("closed tab = %s", msg)
 	}
 	if _, err := h.tools.runner.store.load(run); err == nil {
@@ -348,7 +348,7 @@ func TestRunStateAndDecisionsOff(t *testing.T) {
 }
 
 // A run still progressing when the call's budget runs out answers
-// `running`; browse_continue keeps it going.
+// `running`; resuming keeps it going.
 func TestRunningCheckpoint(t *testing.T) {
 	steps := 0
 	doc := &fakeDoc{url: "https://example.com/", title: "Long", key: "0", actions: []action{{Kind: "click", Node: node(1), Role: "button", Label: "Next"}}}
@@ -373,7 +373,7 @@ func TestRunningCheckpoint(t *testing.T) {
 		t.Fatalf("budget = %v", head)
 	}
 	h.tools.runner.budget = time.Hour
-	head, _ = h.call("browse_continue", map[string]any{"run": head["run"]})
+	head, _ = h.call("browse", map[string]any{"run": head["run"]})
 	if head["checkpoint"] != cpDone || steps != 3 {
 		t.Fatalf("continued = %v steps %d", head, steps)
 	}
