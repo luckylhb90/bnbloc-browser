@@ -260,13 +260,11 @@ func (t *tools) drive(ctx context.Context, r *runState, tb tabHandle, sess compo
 	}
 	if cp.Kind == cpNeedsHuman {
 		// Only the person can go on: the view stays in the room for them
-		// (keep.go), announced now while the turn still runs, and the
-		// window comes forward on this machine too.
+		// (keep.go), announced now while the turn still runs. The window
+		// stays behind: the room's view is where they do it ("Open in the
+		// browser window" brings it forward when they need it).
 		live.end()
 		live.announce(ctx, cp.Waiting)
-		if w, ok := tb.(interface{ bringForward(context.Context) error }); ok {
-			_ = w.bringForward(ctx)
-		}
 		if t.keeper != nil {
 			_ = t.keeper(r.ID, sess.JobID)
 		}

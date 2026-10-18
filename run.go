@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -269,7 +270,12 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 		if err != nil {
 			return nil, err
 		}
-		if !r.onSite(pg.URL) && hasSecret(pg) {
+		if posted, err := autoPost(ctx, p, pg); err != nil {
+			return nil, err
+		} else if posted {
+			continue // the page's own hand-off went on: observe where it led
+		}
+		if !r.onSite(pg.URL) && signInPage(pg) {
 			// A redirect to a sign-in elsewhere (an identity provider):
 			// the person signs in, and the redirect brings the run back.
 			return waitForPerson(nil, waitSignIn), nil
@@ -425,6 +431,18 @@ func waitForPerson(el *checkpointElement, waiting string) *checkpoint {
 	return &checkpoint{Kind: cpNeedsHuman, Element: el, Waiting: waiting,
 		Reason: "only the person can do this step (a sign-in, a password, a second factor); it never passes through you or the model. They do it in the live view in the room, which stays open for them; resume the run with reply once they say they are done"}
 }
+
+// signInPage reports a page that asks someone to sign in: a secret field,
+// or an address or title that names a sign-in (an identity provider's
+// first step asks only for a login name).
+func signInPage(pg *page) bool {
+	if hasSecret(pg) {
+		return true
+	}
+	return signInWords.MatchString(strings.ToLower(pg.URL + " " + pg.Title))
+}
+
+var signInWords = regexp.MustCompile(`(^|[^a-z])(login|log-in|signin|sign-in|sign_in|logon|sso|saml|oauth2?|oidc|openid|authorize|auth|idp|adfs|mfa|2fa|otp)([^a-z]|$)`)
 
 // hasSecret reports a password or other secret field on the page.
 func hasSecret(pg *page) bool {

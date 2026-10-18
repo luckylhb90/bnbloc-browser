@@ -81,8 +81,13 @@ at most 1024 wide: an image costs the agent far more than the text.
    `needs_confirmation`. A typed value comes from `values` by label or
    description containment, else `needs_input`. A secret, or the
    decision's `NEEDS_HUMAN` (a sign-in, a second factor, a captcha, a
-   blank sign-in redirect), is `needs_human`; so is a password page off
-   the run's sites (an identity provider), before any decision there. A link off the run's sites (registrable domains,
+   blank sign-in redirect), is `needs_human`; so is a sign-in page off
+   the run's sites (an identity provider: a secret field, or an address or
+   title naming a sign-in), before any decision there. A blank hand-off
+   page (one form of hidden fields, a SAML or OIDC POST binding) still
+   standing after 1.5 s is submitted, which is all its own onload does:
+   in a background window Chrome can leave it unsubmitted, and the page
+   stays blank. A link off the run's sites (registrable domains,
    `publicsuffix`), or a page that has landed off them, is
    `leaving_site`. A file input is `upload`. A paused step is kept and
    executed as decided once the checkpoint is answered.
@@ -120,7 +125,7 @@ the channel a `job_live_frame` event without the image; a viewer fetches
   with no window, each run opens one in the background, and a covered
   window still renders captures (a minimized one does not, so it is
   restored, never minimized). "Open in the browser window" and a `needs_human`
-  checkpoint bring it forward.
+  checkpoint does not: the person does it in the room's view.
 - **Waiting for a person** (bnbloc PRD §3.7). At a `needs_human` pause the
   call posts the view saying what the person does (`waiting`) before it
   returns, then starts `bnbloc-browser keep --run <id> --job <turn's job>`,

@@ -54,6 +54,8 @@ type liveFeed struct {
 	isReady    bool
 	// closed: the owner closed the view from the room (LiveInputClose).
 	closed bool
+	// refused is the last refusal of a post (the keeper logs it).
+	refusedBy string
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -180,6 +182,9 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	var re *relayError
 	switch {
 	case errors.As(err, &re) && refused(re.Status):
+		f.mu.Lock()
+		f.refusedBy = re.Error()
+		f.mu.Unlock()
 		return 0, false
 	case err != nil:
 		return f.pace(), true
@@ -200,6 +205,13 @@ func (f *liveFeed) announce(ctx context.Context, waiting string) {
 	f.mu.Unlock()
 	last := [32]byte{}
 	_, _ = f.tick(ctx, &last)
+}
+
+// refusal is why the last post was refused ("" none).
+func (f *liveFeed) refusal() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.refusedBy
 }
 
 // refused: the relay or the gateway will not take this view's posts (live

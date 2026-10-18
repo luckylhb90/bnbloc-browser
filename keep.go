@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -84,12 +85,15 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 	}
 	defer unlock()
 	if stopped(store, runID) {
+		logKeep("stopped before it began")
 		return nil
 	}
 	r, err := store.load(runID)
 	if err != nil || r.Checkpoint == nil || r.Checkpoint.Kind != cpNeedsHuman {
+		logKeep("the run is not paused for a person")
 		return err
 	}
+	logKeep("holding the view of %s under %s", runID, job)
 	end := func() {
 		ectx, cancel := context.WithTimeout(context.Background(), keepPostFor)
 		defer cancel()
@@ -111,6 +115,7 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 	failures := 0
 	for {
 		if stopped(store, runID) || f.isClosed() || !stillWaiting(store, runID) {
+			logKeep("ended: resumed or closed")
 			end()
 			return nil
 		}
@@ -129,7 +134,8 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		every, ok := f.tick(tctx, &last)
 		cancel()
 		if !ok {
-			return nil // the relay refuses: the session is gone, and the view with it
+			logKeep("ended: the relay refuses the view (%s)", f.refusal())
+			return nil // the session is gone, and the view with it
 		}
 		if !waitStop(ctx, store, runID, every) {
 			end()
@@ -142,6 +148,11 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 func stopped(store runStore, runID string) bool {
 	_, err := os.Stat(store.keepStop(runID))
 	return err == nil
+}
+
+// logKeep writes one line of the keeper's log (<run>.keep.log).
+func logKeep(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, time.Now().Format(time.RFC3339)+" "+format+"\n", args...)
 }
 
 // stillWaiting reports whether the run is still paused for a person (a

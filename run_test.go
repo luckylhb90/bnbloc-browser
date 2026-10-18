@@ -613,3 +613,29 @@ func TestKeeperHoldsTheViewUntilResumed(t *testing.T) {
 	}
 	waitFor("end after close", func(p liveFramePost) bool { return p.End })
 }
+
+// A SAML hand-off page the browser left standing (blank, one form of
+// hidden fields, its onload submit never ran) is submitted, and the
+// identity provider's first sign-in step (a login name, no password yet)
+// pauses at needs_human before any decision there.
+func TestStuckSignInHandOffGoesOn(t *testing.T) {
+	handOff := &fakeDoc{url: "https://identity.portal.example.com/oidc/authorize", title: "", text: "", key: "hand-off"}
+	login := &fakeDoc{url: "https://sso.idp.example.net/ui/login/login", title: "Example SSO", text: "Enter your login data. Login Name", key: "idp", actions: []action{
+		{Kind: "fill", Node: node(1), Role: "textbox", Label: "Login Name"},
+		{Kind: "click", Node: node(2), Role: "button", Label: "Next"},
+	}}
+	fp := &fakePage{doc: handOff}
+	posted := 0
+	fp.onAutoPost = func(p *fakePage) { posted++; p.doc = login }
+	h := newHarness(t, fp, func(q decReq) (string, string) {
+		t.Errorf("a decision was asked on %v", q.State["page"])
+		return opBlocked, ""
+	})
+	head, _ := h.call("browse", map[string]any{"goal": "open the portal", "url": "https://portal.example.com/home"})
+	if head["checkpoint"] != cpNeedsHuman || posted != 1 {
+		t.Fatalf("checkpoint = %v (hand-off posted %d)", head, posted)
+	}
+	if signInPage(&page{URL: "https://portal.example.com/reports", Title: "Reports"}) {
+		t.Fatal("an ordinary page counted as a sign-in")
+	}
+}

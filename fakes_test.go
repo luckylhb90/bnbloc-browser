@@ -58,6 +58,8 @@ type fakePage struct {
 	typed        []string
 	files        []string
 	lastNode     int
+	// onAutoPost is the hand-off page's form submit (autoPostJS).
+	onAutoPost func(p *fakePage)
 }
 
 func (p *fakePage) set(d *fakeDoc) { p.doc = d }
@@ -117,6 +119,16 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 			return value(map[string]any{"x": a.Node, "y": 1})
 		case strings.HasPrefix(expr, "("+settleJS+")("):
 			return value(nil)
+		case expr == "location.href":
+			return value(p.doc.url)
+		case expr == autoPostJS:
+			if p.onAutoPost == nil {
+				return value(false)
+			}
+			p.onAutoPost(p)
+			return value(true)
+		case expr == "({url: location.href, ready: document.readyState})":
+			return value(map[string]any{"url": p.doc.url, "ready": "complete"})
 		case strings.HasPrefix(expr, "window.__bnblocBrowse?.nodes.get("):
 			return reply(map[string]any{"result": map[string]any{"objectId": "obj-" + strconv.Itoa(nodeIn(expr))}})
 		}

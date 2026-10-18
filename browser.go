@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -290,6 +291,73 @@ func act(ctx context.Context, p browserPage, pg *page, a action, text string) er
 	// Settle before the next observation (read-only; a navigation ends it).
 	_ = evaluate(ctx, p, "("+settleJS+")("+string(raw)+")", nil)
 	return nil
+}
+
+// autoPostJS submits a hand-off page's form: a page that shows nothing and
+// holds one form of hidden fields only (a SAML or OIDC POST binding, whose
+// onload submits it). It answers whether it did.
+const autoPostJS = `(() => {
+  const b=document.body;
+  if (!b || b.innerText.trim() || document.readyState!=='complete') return false;
+  const forms=[...document.forms].filter(f=>f.elements.length && [...f.elements].every(e=>e.type==='hidden'));
+  if (forms.length!==1) return false;
+  HTMLFormElement.prototype.submit.call(forms[0]);
+  return true;
+})()`
+
+// autoPostWait is how long a hand-off page gets to submit itself first.
+const autoPostWait = 1500 * time.Millisecond
+
+// autoPost finishes a hand-off page the browser left standing (seen on a
+// background window: the onload submit never ran, and the page stays
+// blank): when pg shows nothing and is still there after autoPostWait, its
+// form is submitted, which is all the page itself does, and the next page
+// loads. It answers whether it submitted.
+func autoPost(ctx context.Context, p browserPage, pg *page) (bool, error) {
+	if strings.TrimSpace(pg.Text) != "" || len(pg.Actions) > 0 && !onlyControls(pg) {
+		return false, nil
+	}
+	if err := sleepCtx(ctx, autoPostWait); err != nil {
+		return false, err
+	}
+	var now string
+	if evaluate(ctx, p, "location.href", &now) != nil || now != pg.URL {
+		return false, nil // it went on by itself
+	}
+	var posted bool
+	if evaluate(ctx, p, autoPostJS, &posted) != nil || !posted {
+		return false, nil
+	}
+	waitLoaded(ctx, p, pg.URL)
+	return true, nil
+}
+
+// onlyControls: the page offers nothing but its scroll and wait controls.
+func onlyControls(pg *page) bool {
+	for _, a := range pg.Actions {
+		if a.Node != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// waitLoaded waits until the tab has left from and the next document
+// loaded (bounded: a slow page is observed as it is).
+func waitLoaded(ctx context.Context, p browserPage, from string) {
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		var st struct {
+			URL   string `json:"url"`
+			Ready string `json:"ready"`
+		}
+		if evaluate(ctx, p, "({url: location.href, ready: document.readyState})", &st) == nil && st.URL != from && st.Ready == "complete" {
+			return
+		}
+		if sleepCtx(ctx, 50*time.Millisecond) != nil {
+			return
+		}
+	}
 }
 
 // navigate opens url in the tab and waits for the document to load.
