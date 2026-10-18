@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckylhb90/bnbloc/component"
 	"github.com/luckylhb90/bnbloc/core/pkgmeta"
-	"github.com/luckylhb90/bnbloc/internal/wire"
 )
 
 // expensePortal is a two-page fake site: a form (amount field, a "Preview"
@@ -51,7 +51,7 @@ func newHarness(t *testing.T, p *fakePage, script func(q decReq) (string, string
 	t.Helper()
 	model := &fakeModel{script: script}
 	fr := &fakeRelay{model: model}
-	fr.bind(wire.RoomRelaySession{JobID: "job-1", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 10, ByRequester: true})
+	fr.bind(component.RelaySession{JobID: "job-1", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 10, ByRequester: true})
 	host := &fakeHost{next: p}
 	gw := fr.start(t)
 	tl := &tools{gw: gw, runner: &runner{dec: gw, host: host, store: runStore{dir: t.TempDir()}, downloads: filepath.Join(t.TempDir(), "downloads"), budget: time.Minute, now: time.Now}}
@@ -125,7 +125,7 @@ func TestRunConfirmsByANewerTurn(t *testing.T) {
 		t.Fatalf("same-turn confirmation = %v", head)
 	}
 	// A newer turn, but a schedule's post, not the person.
-	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: false})
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: false})
 	head, _ = h.call("browse", map[string]any{"run": run, "confirmed": true})
 	if head["checkpoint"] != cpNeedsConfirmation {
 		t.Fatalf("a scheduled turn confirmed it: %v", head)
@@ -134,7 +134,7 @@ func TestRunConfirmsByANewerTurn(t *testing.T) {
 		t.Fatalf("submitted before the person answered (%d)", got)
 	}
 	// maya answers in the room: a newer turn she opened.
-	h.relay.bind(wire.RoomRelaySession{JobID: "job-3", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 12, ByRequester: true})
+	h.relay.bind(component.RelaySession{JobID: "job-3", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 12, ByRequester: true})
 	head, text = h.call("browse", map[string]any{"run": run, "confirmed": true})
 	if head["checkpoint"] != cpDone || countClicks(p, 3) != 1 {
 		t.Fatalf("after maya's answer = %v (submit clicks %d)", head, countClicks(p, 3))
@@ -177,7 +177,7 @@ func TestNeedsInputAndDecline(t *testing.T) {
 	if head["checkpoint"] != cpNeedsConfirmation || len(p.typed) != 1 || p.typed[0] != "88" {
 		t.Fatalf("with the value = %v typed %v", head, p.typed)
 	}
-	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 20, ByRequester: true})
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 20, ByRequester: true})
 	h.model.script = func(q decReq) (string, string) { return opBlocked, "" }
 	head, _ = h.call("browse", map[string]any{"run": run, "confirmed": false})
 	if head["checkpoint"] != cpBlocked || countClicks(p, 3) != 0 {
@@ -248,7 +248,7 @@ func TestLeavingSite(t *testing.T) {
 	if head["checkpoint"] != cpLeavingSite || head["site"] != "other.test" || len(p.clicks) != 0 {
 		t.Fatalf("leaving = %v", head)
 	}
-	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
 	head, _ = h.call("browse", map[string]any{"run": head["run"], "confirmed": true})
 	if head["checkpoint"] != cpDone || len(p.clicks) != 1 {
 		t.Fatalf("after yes = %v clicks %v", head, p.clicks)
@@ -289,7 +289,7 @@ func TestSecretsAndUploads(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(wd) })
 	_ = os.WriteFile(filepath.Join(work, "receipt.pdf"), []byte("%PDF"), 0o600)
-	h2.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
+	h2.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
 	head, _ = h2.call("browse", map[string]any{"run": run, "confirmed": true, "file": "../../etc/passwd"})
 	if head["checkpoint"] != cpUpload || !strings.Contains(head["note"].(string), "workspace") || len(p2.files) != 0 {
 		t.Fatalf("a file outside the workspace = %v", head)
@@ -306,14 +306,14 @@ func TestSecretsAndUploads(t *testing.T) {
 func TestOwnerAndRequester(t *testing.T) {
 	p, _, _ := expensePortal()
 	h := newHarness(t, p, func(q decReq) (string, string) { return opBlocked, "" })
-	h.relay.bind(wire.RoomRelaySession{JobID: "job-1", RoomID: "room-1", Requester: "jack", Owner: "maya", MessageSeq: 5, ByRequester: true})
+	h.relay.bind(component.RelaySession{JobID: "job-1", RoomID: "room-1", Requester: "jack", Owner: "maya", MessageSeq: 5, ByRequester: true})
 	head, _ := h.call("browse", map[string]any{"goal": "g", "url": "https://portal.example.com/expenses/new"})
 	if head["checkpoint"] != cpNeedsHuman || !strings.Contains(head["reason"].(string), "ask maya") || h.host.opened != 0 {
 		t.Fatalf("a non-owner's run = %v (tabs opened %d)", head, h.host.opened)
 	}
-	h.relay.bind(wire.RoomRelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 6, ByRequester: true})
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 6, ByRequester: true})
 	head, _ = h.call("browse", map[string]any{"goal": "g", "url": "https://portal.example.com/expenses/new"})
-	h.relay.bind(wire.RoomRelaySession{JobID: "job-3", RoomID: "room-1", Requester: "jack", Owner: "maya", MessageSeq: 7, ByRequester: true})
+	h.relay.bind(component.RelaySession{JobID: "job-3", RoomID: "room-1", Requester: "jack", Owner: "maya", MessageSeq: 7, ByRequester: true})
 	if msg := h.callErr("browse", map[string]any{"run": head["run"]}); !strings.Contains(msg, "acts for someone else") {
 		t.Fatalf("another requester resumed it: %s", msg)
 	}
@@ -402,7 +402,7 @@ func TestMCPSurface(t *testing.T) {
 	tools := res.(map[string]any)["tools"].([]any)
 	// The published package names exactly the tools the binary serves, and
 	// is a valid MCP package apart from its binaries.
-	raw, err := os.ReadFile("../../packages/browser/package.json")
+	raw, err := os.ReadFile("package.json")
 	if err != nil {
 		t.Fatal(err)
 	}

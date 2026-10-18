@@ -1,6 +1,6 @@
 # Browser component
 
-Design: [docs/prd/2026-10-17-browser-component.md](../prd/2026-10-17-browser-component.md).
+Design: [the browser component PRD](https://github.com/luckylhb90/bnbloc/blob/main/docs/prd/2026-10-17-browser-component.md) in the bnbloc repository.
 
 A room agent operates web pages in a dedicated, visible Chrome profile on
 the machine of the person who asked, signed in as them (PRD §3.6; until
@@ -9,8 +9,8 @@ someone else's answers `needs_human`). The agent states
 a goal and the values to type; the component works the page one step at a
 time, and stops at a checkpoint whenever a person has to say something.
 
-It is an installable MCP tool component (`packages/browser/package.json`,
-binary `cmd/bnbloc-browser`), `credentials: "room"`: it reaches the
+It is an installable MCP tool component (`package.json`, this
+repository's binary), `credentials: "room"`: it reaches the
 gateway only through the room relay, as the person the agent is answering.
 The platform gives it two generic things (§3.1, §3.5 of the PRD); nothing
 else in the platform knows it exists. Installing it is the switch: a
@@ -19,7 +19,7 @@ turn gets every MCP tool its requester installed, with no skill pack
 
 ## Owners
 
-- `cmd/bnbloc-browser`:
+- This repository:
   - `tools.go` — the two tools, their wording, owner and requester
     checks, consent, the result shape.
   - `run.go` — the run loop, checkpoints, saved runs.
@@ -32,11 +32,11 @@ turn gets every MCP tool its requester installed, with no skill pack
   - `live.go` — the live view: frames out, a viewer's input in.
   - `snapshot.js` — the page reader, a modified port of browser-use's
     jev-ultrafast (MIT, `NOTICE`).
-- `internal/wire/mcp_tools.go` `RoomRelaySession` and
-  `services/bridge/roomtools/relay.go` `relaySession`: the bound job's facts.
-- `services/gateway/decisions.go`: the decision rate.
-- Live view (any tool's, not only this one's): `internal/wire/job_live.go`
-  (the contract), `services/gateway/job_live.go` (`POST /v1/live` under
+- In bnbloc (the platform, all generic): `component.RelaySession` and the
+  bridge's relay (`services/bridge/roomtools/relay.go`), the bound job's
+  facts; `services/gateway/decisions.go`, the decision rate.
+- Live view (any tool's, not only this one's), in bnbloc: `component/live.go`
+  (this side of the contract), `internal/wire/job_live.go` (the room's), `services/gateway/job_live.go` (`POST /v1/live` under
   the job grant), `services/realtime/job_live.go` (newest frame per job,
   watching, control, input), `web/src/views/live/` and
   `web/src/lib/jobLive.ts` (thumbnail, large view, pop-out).

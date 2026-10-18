@@ -18,7 +18,7 @@ import (
 )
 
 // A run: one goal worked on in its own tab until a checkpoint (§2.4 of
-// docs/prd/2026-10-17-browser-component.md). The loop is a port of
+// bnbloc docs/prd/2026-10-17-browser-component.md). The loop is a port of
 // jev-ultrafast's agent.py (NOTICE): observe, decide (one SystemOne call:
 // the operation and every operation's target), execute, observe again.
 // Instead of the demo's exceptions every pause is a checkpoint the agent

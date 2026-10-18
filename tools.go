@@ -11,9 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luckylhb90/bnbloc/component"
 	"github.com/luckylhb90/bnbloc/core"
-	"github.com/luckylhb90/bnbloc/internal/roomlog"
-	"github.com/luckylhb90/bnbloc/internal/wire"
 )
 
 // The agent's two tools (§2.3). Their wording lives here only (the
@@ -201,7 +200,7 @@ func (t *tools) resume(ctx context.Context, args json.RawMessage) (any, *rpcErro
 // consentHolds is the §2.5 rule: a person's answer counts only in a turn
 // the run's requester opened with their own message after the pause.
 // It answers why not, "" when it holds.
-func consentHolds(sess wire.RoomRelaySession, r *runState) string {
+func consentHolds(sess component.RelaySession, r *runState) string {
 	switch {
 	case sess.Requester != r.Requester:
 		return "still waiting: only " + r.Requester + " can agree to this"
@@ -226,7 +225,7 @@ func describeDeclined(cp *checkpoint) string {
 
 // drive resumes the held step (if any) and loops to the next checkpoint,
 // saving the run.
-func (t *tools) drive(ctx context.Context, r *runState, tb tabHandle, sess wire.RoomRelaySession, resume func() error) (any, *rpcError) {
+func (t *tools) drive(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, resume func() error) (any, *rpcError) {
 	live := startLive(t.gw, tb, r.ID)
 	defer live.end()
 	t.runner.held = live.holder
@@ -366,7 +365,7 @@ func checkpointResult(r *runState, cp *checkpoint, pv *pageView, note string) an
 		}
 	}
 	if site.Len() > 0 {
-		text += "\n\n" + roomlog.Fence("the web page"+siteSuffix(pv), site.String())
+		text += "\n\n" + component.Fence("the web page"+siteSuffix(pv), site.String())
 	}
 	content = append(content, map[string]any{"type": "text", "text": text})
 	if pv != nil && pv.shot != "" {

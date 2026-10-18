@@ -16,7 +16,7 @@ import (
 )
 
 // The browser host: the member's dedicated, visible Chrome profile
-// (docs/prd/2026-10-17-browser-component.md §2.2). The executor only
+// (bnbloc docs/prd/2026-10-17-browser-component.md §2.2). The executor only
 // speaks CDP to a loopback endpoint; where that endpoint comes from:
 //
 //  1. --endpoint / BNBLOC_BROWSER_ENDPOINT: an http://127.0.0.1:<port>

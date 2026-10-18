@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/luckylhb90/bnbloc/internal/wire"
+	"github.com/luckylhb90/bnbloc/component"
 )
 
 // relay is the session's room relay (the bridge's loopback address and the
@@ -42,10 +42,10 @@ func (g *relay) systemOne(ctx context.Context, body any) ([]byte, error) {
 	return out, err
 }
 
-// session reads the bound turn (wire.RoomRelaySession).
-func (g *relay) session(ctx context.Context) (wire.RoomRelaySession, error) {
-	var s wire.RoomRelaySession
-	raw, err := g.do(ctx, http.MethodGet, wire.RoomRelaySessionPath, nil)
+// session reads the bound turn (component.RelaySession).
+func (g *relay) session(ctx context.Context) (component.RelaySession, error) {
+	var s component.RelaySession
+	raw, err := g.do(ctx, http.MethodGet, component.RelaySessionPath, nil)
 	if err != nil {
 		return s, err
 	}

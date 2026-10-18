@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luckylhb90/bnbloc/internal/wire"
+	"github.com/luckylhb90/bnbloc/component"
 )
 
 // The run's live view (§2.8, wire/job_live.go): while a call works, the
@@ -178,7 +178,7 @@ func shotSize(v viewport) (int, int) {
 	return int(w), int(h)
 }
 
-// liveFramePost is wire.LiveFramePost with the image as the capture's
+// liveFramePost is component.LiveFramePost with the image as the capture's
 // base64 (what []byte marshals to), so it is never decoded here.
 type liveFramePost struct {
 	Run      string `json:"run,omitempty"`
@@ -192,8 +192,8 @@ type liveFramePost struct {
 }
 
 // liveFrame posts one frame (or an empty post) through the relay.
-func (g *relay) liveFrame(ctx context.Context, post liveFramePost) (wire.LiveFrameReply, error) {
-	var reply wire.LiveFrameReply
+func (g *relay) liveFrame(ctx context.Context, post liveFramePost) (component.LiveFrameReply, error) {
+	var reply component.LiveFrameReply
 	raw, err := json.Marshal(post)
 	if err != nil {
 		return reply, err
@@ -208,7 +208,7 @@ func (g *relay) liveFrame(ctx context.Context, post liveFramePost) (wire.LiveFra
 
 // apply runs a controller's input on the tab. Coordinates are fractions of
 // the frame, mapped to the page's CSS pixels.
-func (f *liveFeed) apply(ctx context.Context, in []wire.LiveInput) {
+func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput) {
 	if len(in) == 0 {
 		return
 	}
@@ -218,7 +218,7 @@ func (f *liveFeed) apply(ctx context.Context, in []wire.LiveInput) {
 	for _, e := range in {
 		x, y := e.X*view.W, e.Y*view.H
 		switch e.Type {
-		case wire.LiveInputMouse:
+		case component.LiveInputMouse:
 			kind := map[string]string{"down": "mousePressed", "up": "mouseReleased"}[e.Action]
 			if kind == "" {
 				kind = "mouseMoved"
@@ -235,15 +235,15 @@ func (f *liveFeed) apply(ctx context.Context, in []wire.LiveInput) {
 				clicks = 1
 			}
 			_ = f.tab.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": kind, "x": x, "y": y, "button": button, "clickCount": clicks, "modifiers": e.Modifiers}, nil)
-		case wire.LiveInputWheel:
+		case component.LiveInputWheel:
 			_ = f.tab.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": "mouseWheel", "x": x, "y": y, "deltaX": e.DeltaX, "deltaY": e.DeltaY, "modifiers": e.Modifiers}, nil)
-		case wire.LiveInputKey:
+		case component.LiveInputKey:
 			_ = f.tab.call(ctx, "Input.dispatchKeyEvent", keyEvent(e), nil)
-		case wire.LiveInputText:
+		case component.LiveInputText:
 			if e.Text != "" {
 				_ = f.tab.call(ctx, "Input.insertText", map[string]any{"text": e.Text}, nil)
 			}
-		case wire.LiveInputFocus:
+		case component.LiveInputFocus:
 			f.bringForward(ctx)
 		}
 	}
@@ -251,7 +251,7 @@ func (f *liveFeed) apply(ctx context.Context, in []wire.LiveInput) {
 
 // keyEvent is a key's CDP event. A printable key sends its text on press
 // (that types it); the named keys carry the virtual key code Chrome acts on.
-func keyEvent(e wire.LiveInput) map[string]any {
+func keyEvent(e component.LiveInput) map[string]any {
 	ev := map[string]any{"key": e.Key, "code": e.Code, "modifiers": e.Modifiers}
 	if vk, ok := virtualKeys[e.Key]; ok {
 		ev["windowsVirtualKeyCode"], ev["nativeVirtualKeyCode"] = vk, vk

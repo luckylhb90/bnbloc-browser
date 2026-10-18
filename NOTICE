@@ -1,8 +1,8 @@
-cmd/bnbloc-browser/snapshot.js is derived from jev-ultrafast
+snapshot.js is derived from jev-ultrafast
 (https://github.com/browser-use/jev-ultrafast, jev_ultrafast/snapshot.js),
 modified for bnbloc: secret fields are observed by label only, file inputs
 become upload targets, hidden inputs are skipped, and links carry their
-href. The run loop, executor and question building in this directory are
+href. The run loop, executor and question building in this repository are
 ports of the same project's agent.py, browser.py and model.py.
 
 MIT License

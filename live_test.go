@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luckylhb90/bnbloc/internal/wire"
+	"github.com/luckylhb90/bnbloc/component"
 )
 
 // While a call works, the room sees the page: a frame is posted when the
@@ -23,18 +23,18 @@ func TestLiveViewPostsFramesAndRunsInput(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		return opDone, ""
 	})
-	h.relay.live = func(post liveFramePost) wire.LiveFrameReply {
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
 		mu.Lock()
 		defer mu.Unlock()
 		posts = append(posts, post)
-		reply := wire.LiveFrameReply{Watching: true}
+		reply := component.LiveFrameReply{Watching: true}
 		if !sentInput && post.Data != "" {
 			sentInput = true
 			// x = 0.002 of a 1000-wide page is node 2 ("Preview") in the fake.
-			reply.Input = []wire.LiveInput{
-				{Type: wire.LiveInputMouse, Action: "down", X: 0.002, Y: 0.5},
-				{Type: wire.LiveInputMouse, Action: "up", X: 0.002, Y: 0.5},
-				{Type: wire.LiveInputText, Text: "typed live"},
+			reply.Input = []component.LiveInput{
+				{Type: component.LiveInputMouse, Action: "down", X: 0.002, Y: 0.5},
+				{Type: component.LiveInputMouse, Action: "up", X: 0.002, Y: 0.5},
+				{Type: component.LiveInputText, Text: "typed live"},
 			}
 		}
 		return reply
@@ -73,10 +73,10 @@ func TestRunWaitsWhileSomeoneHasControl(t *testing.T) {
 	var mu sync.Mutex
 	controller := "maya"
 	h := newHarness(t, p, func(q decReq) (string, string) { return opDone, "" })
-	h.relay.live = func(post liveFramePost) wire.LiveFrameReply {
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
 		mu.Lock()
 		defer mu.Unlock()
-		return wire.LiveFrameReply{Controller: controller}
+		return component.LiveFrameReply{Controller: controller}
 	}
 	go func() {
 		time.Sleep(1500 * time.Millisecond)

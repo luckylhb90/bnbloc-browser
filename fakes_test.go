@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/luckylhb90/bnbloc/internal/wire"
+	"github.com/luckylhb90/bnbloc/component"
 )
 
 // fakeDoc is one state of a fake page.
@@ -298,13 +298,13 @@ func (m *fakeModel) systemOne(_ context.Context, body any) ([]byte, error) {
 // sends systemone to the fake model.
 type fakeRelay struct {
 	mu    sync.Mutex
-	sess  wire.RoomRelaySession
+	sess  component.RelaySession
 	model *fakeModel
 	// live answers POST /v1/live (nil: 404, live views off).
-	live func(liveFramePost) wire.LiveFrameReply
+	live func(liveFramePost) component.LiveFrameReply
 }
 
-func (f *fakeRelay) bind(s wire.RoomRelaySession) { f.mu.Lock(); f.sess = s; f.mu.Unlock() }
+func (f *fakeRelay) bind(s component.RelaySession) { f.mu.Lock(); f.sess = s; f.mu.Unlock() }
 
 func (f *fakeRelay) start(t *testing.T) *relay {
 	t.Helper()
@@ -314,7 +314,7 @@ func (f *fakeRelay) start(t *testing.T) *relay {
 			return
 		}
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/relay"+wire.RoomRelaySessionPath:
+		case r.Method == http.MethodGet && r.URL.Path == "/relay"+component.RelaySessionPath:
 			f.mu.Lock()
 			s := f.sess
 			f.mu.Unlock()

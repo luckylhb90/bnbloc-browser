@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luckylhb90/bnbloc/internal/wire"
+	"github.com/luckylhb90/bnbloc/component"
 )
 
 // The live view on a visible Chrome (BNBLOC_BROWSER_VISIBLE_TEST=1; it opens
@@ -54,7 +54,7 @@ func TestLiveViewOnABackgroundWindow(t *testing.T) {
 	}
 	f := &liveFeed{tab: tb, view: view}
 	_ = evaluate(ctx, tb, "document.getElementById('f').focus()", nil)
-	f.apply(ctx, []wire.LiveInput{{Type: wire.LiveInputText, Text: "typed from the room"}, {Type: wire.LiveInputKey, Action: "down", Key: "!", Code: "Digit1", Text: "!"}, {Type: wire.LiveInputKey, Action: "up", Key: "!", Code: "Digit1"}})
+	f.apply(ctx, []component.LiveInput{{Type: component.LiveInputText, Text: "typed from the room"}, {Type: component.LiveInputKey, Action: "down", Key: "!", Code: "Digit1", Text: "!"}, {Type: component.LiveInputKey, Action: "up", Key: "!", Code: "Digit1"}})
 	var value string
 	if err := evaluate(ctx, tb, "document.getElementById('f').value", &value); err != nil || value != "typed from the room!" {
 		t.Fatalf("input in a background window = %q %v", value, err)
@@ -62,7 +62,7 @@ func TestLiveViewOnABackgroundWindow(t *testing.T) {
 	// A window someone minimized comes back with "Open in the browser
 	// window".
 	_ = c.call(ctx, "", "Browser.setWindowBounds", map[string]any{"windowId": win.WindowID, "bounds": map[string]any{"windowState": "minimized"}}, nil)
-	f.apply(ctx, []wire.LiveInput{{Type: wire.LiveInputFocus}})
+	f.apply(ctx, []component.LiveInput{{Type: component.LiveInputFocus}})
 	_ = c.call(ctx, "", "Browser.getWindowForTarget", map[string]any{"targetId": tb.targetID}, &win)
 	if win.Bounds.WindowState != "normal" {
 		t.Fatalf("the window after bringing it forward = %q", win.Bounds.WindowState)
