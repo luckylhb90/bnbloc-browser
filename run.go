@@ -206,6 +206,26 @@ type runner struct {
 	// `running` (the agent CLI's tool-call timeout, §7 finding 1).
 	budget time.Duration
 	now    func() time.Time
+	// held answers who holds control of the call's browser from the room
+	// ("" nobody; nil outside a call with a live view).
+	held func() string
+}
+
+func (rn *runner) holder() string {
+	if rn.held == nil {
+		return ""
+	}
+	return rn.held()
+}
+
+// sleepCtx waits d or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 // errDecisionsOff: the deployment or organization has no decision model.
@@ -217,10 +237,22 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 	deadline := rn.now().Add(rn.budget)
 	for {
 		if rn.now().After(deadline) {
+			if who := rn.holder(); who != "" {
+				return &checkpoint{Kind: cpRunning, Reason: who + " is driving the browser from the room; resume the run to keep going once they hand it back"}, nil
+			}
 			return &checkpoint{Kind: cpRunning, Reason: "still working; resume the run to keep going"}, nil
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if who := rn.holder(); who != "" {
+			// A person drives the browser from the room (§2.8): the run
+			// takes no step until they hand control back.
+			if err := sleepCtx(ctx, time.Second); err != nil {
+				return nil, err
+			}
+			r.Unchanged = 0
+			continue
 		}
 		if dl := rn.collectDownloads(r); dl != nil {
 			return dl, nil

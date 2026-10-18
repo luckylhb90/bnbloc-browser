@@ -28,12 +28,18 @@ turn gets every MCP tool its requester installed, with no skill pack
   - `cdp.go` — the DevTools socket.
   - `host.go` — which browser, launching it.
   - `downloads.go` — finished downloads into the workspace.
-  - `relay.go` — the two relay calls.
+  - `relay.go` — the relay calls.
+  - `live.go` — the live view: frames out, a viewer's input in.
   - `snapshot.js` — the page reader, a modified port of browser-use's
     jev-ultrafast (MIT, `NOTICE`).
 - `internal/wire/mcp_tools.go` `RoomRelaySession` and
   `services/bridge/roomtools/relay.go` `relaySession`: the bound job's facts.
 - `services/gateway/decisions.go`: the decision rate.
+- Live view (any tool's, not only this one's): `internal/wire/job_live.go`
+  (the contract), `services/gateway/job_live.go` (`POST /v1/live` under
+  the job grant), `services/realtime/job_live.go` (newest frame per job,
+  watching, control, input), `web/src/views/live/` and
+  `web/src/lib/jobLive.ts` (thumbnail, large view, pop-out).
 
 ## The tools
 
@@ -87,6 +93,31 @@ are `blocked`. A call works up to its budget (`--call-budget`, default
 45s) and answers `running`; the agent continues it. There is no limit on
 a run's length (`no-fixed-time-limits`).
 
+## The live view
+
+While a call works, `live.go` captures the run's tab (JPEG, at most
+1024 wide) and posts it to `POST /v1/live` when the picture changed:
+every 250 ms while someone watches or holds control, every 2 s
+otherwise. Realtime keeps the newest frame per job in memory and sends
+the channel a `job_live_frame` event without the image; a viewer fetches
+`GET /v1/rooms/{room}/jobs/{job}/live/frame`.
+
+- **Where it shows.** A thumbnail in the turn's progress strip; clicking
+  it opens the run in the workbench (a `l:<jobId>` tab), which pops out
+  like any workbench tab (a desktop window `live-*`, or a browser tab at
+  `#/live/<room>/<job>`).
+- **Taking over** (the job's owner): "Take over" in the large view;
+  pointer, wheel, keys and paste go to `POST .../live/input`, and the
+  tool receives them in the reply to its next frame post and dispatches
+  them as CDP input. While someone holds control the run takes no step;
+  "Hand back" resumes it. Control lapses 15 s after the view stops
+  renewing it.
+- **The window** stays behind the member's other windows: Chrome starts
+  with no window, each run opens one in the background, and a covered
+  window still renders captures (a minimized one does not, so it is
+  restored, never minimized). "Open in the browser window" and a `needs_human`
+  checkpoint bring it forward.
+
 ## Who may run it, and who confirms
 
 - The relay's `GET /session` answers the bound job's facts
@@ -96,7 +127,7 @@ a run's length (`no-fixed-time-limits`).
   another agent dispatched).
 - A run starts only for the owner's own requests. Another member's
   request returns `needs_human` asking the owner to let them use the
-  browser; the grant itself is slice 3.
+  browser; the grant itself is slice 6.
 - A run's requester is fixed when it starts. Resuming it from a turn of
   anyone else is refused.
 - A confirmation (`confirmed: true` on `needs_confirmation`,
@@ -137,3 +168,7 @@ deliverable; the run stops at `download` with the file's name.
 - `chrome_test.go` — the executor on a real headless Chrome against
   `testdata/fixture.html` (skipped when no Chrome is installed, or in
   `-short`; `BNBLOC_BROWSER_CHROME` names one).
+- `live_test.go` — frames posted only on change, a viewer's click and
+  typing reaching the page, a held run taking no step.
+- `visible_test.go` — the live view on a real, visible Chrome window kept
+  in the background (opt-in: `BNBLOC_BROWSER_VISIBLE_TEST=1`).

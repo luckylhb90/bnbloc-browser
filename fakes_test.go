@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -85,6 +86,8 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 			return value(p.doc.snapshot()["marker"])
 		case expr == "document.readyState":
 			return value("complete")
+		case strings.HasPrefix(expr, "({W: innerWidth"):
+			return value(map[string]any{"W": 1000, "H": 500, "DPR": 2, "Title": p.doc.title, "URL": "https://portal.example.com/"})
 		case strings.Contains(expr, "c.pageKey(),c.guard("):
 			n := nodeIn(expr)
 			s := p.doc.snapshot()
@@ -144,11 +147,11 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 			p.files = append(p.files, f.(string))
 		}
 		return nil
-	case "Page.navigate", "Page.captureScreenshot":
-		if method == "Page.captureScreenshot" {
-			return reply(map[string]any{"data": "aGVsbG8="})
-		}
+	case "Page.navigate":
 		return nil
+	case "Page.captureScreenshot":
+		// The picture follows the page: a new document, a new frame.
+		return reply(map[string]any{"data": base64.StdEncoding.EncodeToString([]byte("shot of " + p.doc.title))})
 	}
 	return fmt.Errorf("fake page: unexpected method %s", method)
 }
@@ -297,6 +300,8 @@ type fakeRelay struct {
 	mu    sync.Mutex
 	sess  wire.RoomRelaySession
 	model *fakeModel
+	// live answers POST /v1/live (nil: 404, live views off).
+	live func(liveFramePost) wire.LiveFrameReply
 }
 
 func (f *fakeRelay) bind(s wire.RoomRelaySession) { f.mu.Lock(); f.sess = s; f.mu.Unlock() }
@@ -314,6 +319,10 @@ func (f *fakeRelay) start(t *testing.T) *relay {
 			s := f.sess
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(s)
+		case r.Method == http.MethodPost && r.URL.Path == "/relay/v1/live" && f.live != nil:
+			var post liveFramePost
+			_ = json.NewDecoder(r.Body).Decode(&post)
+			_ = json.NewEncoder(w).Encode(f.live(post))
 		case r.Method == http.MethodPost && r.URL.Path == "/relay/v1/systemone":
 			var body any
 			_ = json.NewDecoder(r.Body).Decode(&body)

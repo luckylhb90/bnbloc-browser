@@ -63,7 +63,7 @@ func TestExecutorOnChrome(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tb, err := openTab(ctx, c)
+	tb, err := openTab(ctx, c, false)
 	if err != nil {
 		t.Fatal(err)
 	}

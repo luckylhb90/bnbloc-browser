@@ -218,12 +218,25 @@ type tab struct {
 	session  string
 }
 
-// openTab creates a new tab on url's blank start, attached and ready.
-func openTab(ctx context.Context, c *cdpConn) (*tab, error) {
+// openTab creates a run's tab on a blank start, attached and ready. With
+// behind, in a window of its own opened behind the member's other windows,
+// so a run never takes their screen or focus (§2.8: people watch it in the
+// room's live view, and "Open in the browser window" brings it forward).
+// Not minimized: Chrome stops painting a minimized window, and its capture
+// (the live view's frames) never answers. A browser that cannot open such
+// a window gets a background tab; a headless one has no screen to take.
+func openTab(ctx context.Context, c *cdpConn, behind bool) (*tab, error) {
 	var created struct {
 		TargetID string `json:"targetId"`
 	}
-	if err := c.call(ctx, "", "Target.createTarget", map[string]any{"url": "about:blank", "background": true}, &created); err != nil {
+	err := errors.New("headless")
+	if behind {
+		err = c.call(ctx, "", "Target.createTarget", map[string]any{"url": "about:blank", "newWindow": true, "background": true}, &created)
+	}
+	if err != nil {
+		err = c.call(ctx, "", "Target.createTarget", map[string]any{"url": "about:blank", "background": true}, &created)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("open a tab: %w", err)
 	}
 	return attachTab(ctx, c, created.TargetID)

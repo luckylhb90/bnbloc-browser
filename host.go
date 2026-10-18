@@ -148,7 +148,7 @@ func (h *localHost) open(ctx context.Context) (tabHandle, error) {
 	if err != nil {
 		return nil, err
 	}
-	return openTab(ctx, c)
+	return openTab(ctx, c, !h.cfg.Headless)
 }
 
 // attach reattaches a run's tab by its target id.
@@ -188,18 +188,23 @@ func writeEndpoint(path string, rec endpointRecord) error {
 
 // chromeArgs are the browser's flags: the dedicated profile, DevTools on
 // a loopback port the browser picks (it writes DevToolsActivePort into
-// the profile).
+// the profile). It starts with no window, so it never takes the member's
+// screen (each run opens its own window behind theirs: openTab), and keeps
+// rendering pages whose window is covered, which the live view captures.
 func chromeArgs(cfg hostConfig) []string {
 	args := []string{
 		"--user-data-dir=" + cfg.Profile,
 		"--remote-debugging-port=0",
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--disable-backgrounding-occluded-windows",
+		"--disable-renderer-backgrounding",
+		"--disable-background-timer-throttling",
 	}
 	if cfg.Headless {
-		args = append(args, "--headless=new", "--window-size=1120,780")
+		return append(args, "--headless=new", "--window-size=1120,780", "about:blank")
 	}
-	return append(args, "about:blank")
+	return append(args, "--no-startup-window")
 }
 
 // findChrome locates a Chrome or Chromium: the configured path, then the

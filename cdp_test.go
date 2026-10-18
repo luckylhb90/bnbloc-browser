@@ -127,7 +127,7 @@ func TestCDPTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.close()
-	tb, err := openTab(ctx, c)
+	tb, err := openTab(ctx, c, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +181,11 @@ func TestDevToolsURL(t *testing.T) {
 	}
 	args := strings.Join(chromeArgs(hostConfig{Profile: "/p"}), " ")
 	if !strings.Contains(args, "--user-data-dir=/p") || !strings.Contains(args, "--remote-debugging-port=0") || strings.Contains(args, "headless") {
+		t.Fatalf("args = %s", args)
+	}
+	// A visible browser starts without a window (a run's tab opens its own,
+	// minimized) and keeps rendering hidden pages for the live view.
+	if !strings.Contains(args, "--no-startup-window") || !strings.Contains(args, "--disable-backgrounding-occluded-windows") || strings.Contains(args, "about:blank") {
 		t.Fatalf("args = %s", args)
 	}
 }

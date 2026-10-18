@@ -227,6 +227,10 @@ func describeDeclined(cp *checkpoint) string {
 // drive resumes the held step (if any) and loops to the next checkpoint,
 // saving the run.
 func (t *tools) drive(ctx context.Context, r *runState, tb tabHandle, sess wire.RoomRelaySession, resume func() error) (any, *rpcError) {
+	live := startLive(t.gw, tb, r.ID)
+	defer live.end()
+	t.runner.held = live.holder
+	defer func() { t.runner.held = nil }()
 	if resume != nil {
 		if err := resume(); err != nil && !errors.Is(err, errStale) {
 			_ = t.runner.store.save(r)
@@ -245,6 +249,13 @@ func (t *tools) drive(ctx context.Context, r *runState, tb tabHandle, sess wire.
 	r.Checkpoint, r.PausedAtSeq = cp, sess.MessageSeq
 	if err := t.runner.store.save(r); err != nil {
 		return nil, toolFailure(err)
+	}
+	// The window lives in the background (§2.8); when only a person at
+	// this machine can go on (a password), it comes forward for them.
+	if cp.Kind == cpNeedsHuman {
+		if w, ok := tb.(interface{ bringForward(context.Context) error }); ok {
+			_ = w.bringForward(ctx)
+		}
 	}
 	return t.result(ctx, r, tb, cp, "", false), nil
 }

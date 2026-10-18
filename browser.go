@@ -316,11 +316,23 @@ func navigate(ctx context.Context, p browserPage, url string) error {
 // pixel per CSS pixel, at most maxShotWidth wide: a high-density screen
 // would otherwise double each side, and every pixel costs the agent tokens.
 func screenshot(ctx context.Context, p browserPage) (string, error) {
-	var view struct {
-		W, H, DPR float64
-	}
-	_ = evaluate(ctx, p, "({W: innerWidth, H: innerHeight, DPR: devicePixelRatio})", &view)
-	params := map[string]any{"format": "jpeg", "quality": 60}
+	shot, _, err := capture(ctx, p, 60)
+	return shot, err
+}
+
+// viewport is the tab's page size in CSS pixels, its title and address.
+type viewport struct {
+	W, H, DPR  float64
+	Title, URL string
+}
+
+// capture is screenshot at a JPEG quality, with the viewport it shows.
+// It works in a window behind others, where Chrome's screencast sends
+// nothing.
+func capture(ctx context.Context, p browserPage, quality int) (string, viewport, error) {
+	var view viewport
+	_ = evaluate(ctx, p, "({W: innerWidth, H: innerHeight, DPR: devicePixelRatio, Title: document.title, URL: location.href})", &view)
+	params := map[string]any{"format": "jpeg", "quality": quality}
 	if view.W > 0 && view.H > 0 && view.DPR > 0 {
 		scale := 1 / view.DPR
 		if view.W > maxShotWidth {
@@ -332,9 +344,9 @@ func screenshot(ctx context.Context, p browserPage) (string, error) {
 		Data string `json:"data"`
 	}
 	if err := p.call(ctx, "Page.captureScreenshot", params, &shot); err != nil {
-		return "", err
+		return "", view, err
 	}
-	return shot.Data, nil
+	return shot.Data, view, nil
 }
 
 // maxShotWidth bounds a screenshot's width in image pixels.
