@@ -104,7 +104,9 @@ func moveDownload(src, dir, suggested string) (string, error) {
 		}
 		_ = os.Remove(src)
 	}
-	return filepath.Join(filepath.Base(dir), filepath.Base(dst)), nil
+	// A workspace path, slash-separated on every OS (the room and the agent
+	// read it).
+	return filepath.Base(dir) + "/" + filepath.Base(dst), nil
 }
 
 // safeFileName keeps a suggested name's last path segment, without control
