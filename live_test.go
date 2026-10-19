@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"sync"
@@ -166,5 +167,24 @@ func TestLiveInputRunsBesideTheFrames(t *testing.T) {
 	}
 	if frameTook {
 		t.Fatal("a frame post took input while someone drove")
+	}
+}
+
+// A dialog's answer answers only the dialog its post carried, once: one
+// that crossed that dialog's close (a second click, a slow view) never
+// answers the page's next dialog.
+func TestDialogAnswerNeverCrossesToTheNextDialog(t *testing.T) {
+	a := &component.LiveDialog{Kind: component.LiveDialogConfirm, Message: "Trust this device?"}
+	b := &component.LiveDialog{Kind: component.LiveDialogConfirm, Message: "Delete the draft?"}
+	p := &fakePage{doc: &fakeDoc{url: "https://portal.example.com/", key: "x"}, dialog: b}
+	f := &liveFeed{tab: &fakeTab{fakePage: p, id: "tab-1"}}
+	accept := []component.LiveInput{{Type: component.LiveInputDialog, Action: "accept"}}
+	f.apply(context.Background(), accept, a)
+	if p.dialog == nil || len(p.answers) != 0 {
+		t.Fatalf("an answer to %q answered %q", a.Message, b.Message)
+	}
+	f.apply(context.Background(), append(accept, accept...), b)
+	if p.dialog != nil || len(p.answers) != 1 || !p.answers[0] {
+		t.Fatalf("answers = %v, want the carried dialog answered once", p.answers)
 	}
 }

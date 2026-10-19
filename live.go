@@ -227,7 +227,7 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	f.mu.Unlock()
 	// Input in a frame's reply: the owner's focus or close (no control
 	// needed), or anyone's from a realtime that does not leave it.
-	f.apply(ctx, reply.Input)
+	f.apply(ctx, reply.Input, post.Dialog)
 	if len(reply.Input) > 0 {
 		return liveAfterInput, true
 	}
@@ -270,7 +270,7 @@ func (f *liveFeed) inputs() {
 		f.controller, f.watched, f.posted = reply.Controller, reply.Watching, time.Now()
 		f.mu.Unlock()
 		if len(reply.Input) > 0 {
-			f.apply(ctx, reply.Input)
+			f.apply(ctx, reply.Input, post.Dialog)
 			select {
 			case f.poke <- struct{}{}:
 			default:
@@ -386,7 +386,11 @@ func (g *relay) liveFrame(ctx context.Context, job string, post liveFramePost) (
 
 // apply runs a controller's input on the tab. Coordinates are fractions of
 // the frame, mapped to the page's CSS pixels.
-func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput) {
+//
+// A dialog's answer answers the dialog the post it came back to carried,
+// only while that one is still open: an answer that crossed the dialog's
+// close (a second click, a slow view) never answers the page's next one.
+func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput, carried *component.LiveDialog) {
 	if len(in) == 0 {
 		return
 	}
@@ -428,8 +432,9 @@ func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput) {
 			f.closed = true
 			f.mu.Unlock()
 		case component.LiveInputDialog:
-			if dp, ok := f.tab.(dialogPage); ok && dp.openDialog() != nil {
+			if dp, ok := f.tab.(dialogPage); ok && carried != nil && sameDialog(dp.openDialog(), carried) {
 				_ = dp.answerDialog(ctx, e.Action == "accept", e.Text)
+				carried = nil // one answer per dialog
 			}
 		}
 	}
