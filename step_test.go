@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/luckylhb90/bnbloc/component"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -82,7 +84,7 @@ func TestSecretsAndUploadsInTheActionSpace(t *testing.T) {
 	if strings.Contains(string(raw), "hunter2") {
 		t.Fatalf("a secret's value reached the request: %s", raw)
 	}
-	if !strings.Contains(string(raw), `"current_value":"(filled)"`) {
+	if !strings.Contains(string(raw), `"label":"Password","role":"textbox","filled":true`) {
 		t.Fatalf("a filled secret is not marked filled: %s", raw)
 	}
 	if _, ok := ops[opSecret]; !ok || targets[opUpload]["2"].ID != "e2" {
@@ -104,12 +106,13 @@ func TestStepRequest(t *testing.T) {
 	if qi < 0 || !strings.HasPrefix(s[qi+len(`"questions":{`):], `"operation":`) {
 		t.Fatalf("operation is not the first question: %s", s)
 	}
-	for _, head := range []string{`"click_target"`, `"type_text_target"`, `"select_target"`} {
+	for _, head := range []string{`"click_target"`, `"select_target"`} {
 		if !strings.Contains(s, head) {
 			t.Fatalf("missing %s: %s", head, s)
 		}
 	}
-	if strings.Contains(s, "upload_target") || strings.Contains(s, "fill_secret_target") {
+	// One field to type into is no question (TestChoiceQuestionsFitTheDecisionAPI).
+	if strings.Contains(s, "upload_target") || strings.Contains(s, "fill_secret_target") || strings.Contains(s, "type_text_target") {
 		t.Fatalf("a head for an operation the page does not offer: %s", s)
 	}
 	var b struct {
@@ -260,5 +263,45 @@ func TestValueFor(t *testing.T) {
 	}
 	if _, ok := r.valueFor(action{Label: "Comment"}); ok {
 		t.Fatal("a field without a value got one")
+	}
+}
+
+// Every choice question fits the decision API (2 to 255 choices; QA
+// 2026-10-19: a page with one link refused every step): a lone candidate is
+// no question and is taken; past 255, the first ones in the page's order
+// are offered.
+func TestChoiceQuestionsFitTheDecisionAPI(t *testing.T) {
+	check := func(pg *page) (map[string]string, map[string]map[string]action, map[string]action) {
+		t.Helper()
+		body, ops, targets, controls := stepRequest("m", pg, "g", nil)
+		raw, _ := json.Marshal(body)
+		var b struct {
+			Questions map[string]struct {
+				Type     string                     `json:"type"`
+				Criteria map[string]json.RawMessage `json:"criteria"`
+			} `json:"questions"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			t.Fatal(err)
+		}
+		for name, q := range b.Questions {
+			if q.Type == "choice" && (len(q.Criteria) < component.MinDecisionChoices || len(q.Criteria) > component.MaxDecisionChoices) {
+				t.Fatalf("%s has %d choices", name, len(q.Criteria))
+			}
+		}
+		return ops, targets, controls
+	}
+	one := &page{URL: "https://hr.example.com/home", Title: "Home", Actions: []action{{ID: "e1", Kind: "click", Node: node(1), Role: "link", Label: "My Learning"}}}
+	ops, targets, controls := check(one)
+	raw, _ := json.Marshal(map[string]any{"answers": map[string]any{"operation": choice(keysOf(ops), opClick)}})
+	if d, err := readDecision(raw, ops, targets, controls); err != nil || d.Action.ID != "e1" {
+		t.Fatalf("the lone candidate = %+v %v", d, err)
+	}
+	many := &page{URL: "https://hr.example.com/catalog", Title: "Catalog"}
+	for i := 1; i <= 300; i++ {
+		many.Actions = append(many.Actions, action{ID: "e" + strconv.Itoa(i), Kind: "click", Node: node(i), Role: "link", Label: "Course " + strconv.Itoa(i)})
+	}
+	if _, targets, _ := check(many); len(targets[opClick]) != component.MaxDecisionChoices {
+		t.Fatalf("offered %d of 300", len(targets[opClick]))
 	}
 }

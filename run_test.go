@@ -102,7 +102,7 @@ func TestRunConfirmsByANewerTurn(t *testing.T) {
 		switch {
 		case page["title"] == "Submitted":
 			return opDone, ""
-		case strings.Contains(string(q.Questions["type_text_target"].Criteria), `"current_value":""`):
+		case func() bool { v, ok := q.fieldValue("Amount"); return ok && v == "" }():
 			return opTypeText, "Amount"
 		default:
 			return opClick, "Submit expense"
@@ -161,7 +161,7 @@ func countClicks(p *fakePage, n int) int {
 func TestNeedsInputAndDecline(t *testing.T) {
 	p, _, _ := expensePortal()
 	h := newHarness(t, p, func(q decReq) (string, string) {
-		if strings.Contains(string(q.Questions["type_text_target"].Criteria), `"current_value":""`) {
+		if v, ok := q.fieldValue("Amount"); ok && v == "" {
 			return opTypeText, "Amount"
 		}
 		return opClick, "Submit expense"

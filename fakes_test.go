@@ -342,6 +342,20 @@ type decReq struct {
 	State map[string]any `json:"state"`
 }
 
+// fieldValue is the value of the page's element labeled label, as the
+// request's state shows it.
+func (q decReq) fieldValue(label string) (string, bool) {
+	elems, _ := q.State["elements"].([]any)
+	for _, e := range elems {
+		m, _ := e.(map[string]any)
+		if m["label"] == label {
+			v, _ := m["value"].(string)
+			return v, true
+		}
+	}
+	return "", false
+}
+
 func (q decReq) labels(head string) []string {
 	var m map[string]any
 	_ = json.Unmarshal(q.Questions[head].Criteria, &m)
@@ -384,6 +398,20 @@ func (m *fakeModel) systemOne(_ context.Context, body any) ([]byte, error) {
 		return nil, errDecisionsOff
 	}
 	raw, _ := json.Marshal(body)
+	// What the gateway refuses, this refuses: a choice question outside the
+	// decision API's bounds.
+	var shape struct {
+		Questions map[string]struct {
+			Type     string                     `json:"type"`
+			Criteria map[string]json.RawMessage `json:"criteria"`
+		} `json:"questions"`
+	}
+	_ = json.Unmarshal(raw, &shape)
+	for name, q := range shape.Questions {
+		if q.Type == "choice" && (len(q.Criteria) < component.MinDecisionChoices || len(q.Criteria) > component.MaxDecisionChoices) {
+			return nil, fmt.Errorf("the gateway answered 400: questions[%s].choices: %d to %d choices", name, component.MinDecisionChoices, component.MaxDecisionChoices)
+		}
+	}
 	var q decReq
 	_ = json.Unmarshal(raw, &q)
 	if _, ok := q.Questions["irreversible"]; ok {

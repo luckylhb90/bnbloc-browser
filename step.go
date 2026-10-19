@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/luckylhb90/bnbloc/component"
 	"math"
 	"strconv"
 	"strings"
@@ -69,13 +70,15 @@ const irreversibleRule = `Would this click submit, pay, send, delete, publish, b
 
 // element is one indexed node as the decision sees it.
 type element struct {
-	Index      string          `json:"index"`
-	Label      string          `json:"label"`
-	Role       string          `json:"role,omitempty"`
-	Value      string          `json:"value,omitempty"`
-	Checked    string          `json:"checked,omitempty"`
-	Selected   string          `json:"selected,omitempty"`
-	Expanded   string          `json:"expanded,omitempty"`
+	Index    string `json:"index"`
+	Label    string `json:"label"`
+	Role     string `json:"role,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Checked  string `json:"checked,omitempty"`
+	Selected string `json:"selected,omitempty"`
+	Expanded string `json:"expanded,omitempty"`
+	// Filled says a secret field holds something (never what).
+	Filled     bool            `json:"filled,omitempty"`
 	Operations []string        `json:"operations"`
 	Options    []elementOption `json:"options,omitempty"`
 	nodeKey    int             // the observed node
@@ -112,7 +115,7 @@ func actionSpace(actions []action) ([]element, map[string]map[string]action, map
 				e.Value = a.CurrentValue
 			}
 			if a.Kind == "secret" {
-				e.Value = "" // never a secret's value
+				e.Value, e.Filled = "", a.Filled // never a secret's value
 			}
 			elements = append(elements, e)
 		}
@@ -181,11 +184,21 @@ func stepRequest(model string, pg *page, goal string, history []historyEntry) (m
 	})
 	for _, op := range opOrder {
 		cands, ok := targets[op]
-		if !ok {
+		// One candidate is no question (the decision API asks for at least
+		// two choices; readDecision takes it); past the API's most, the
+		// first ones in the page's order are offered.
+		if !ok || len(cands) < component.MinDecisionChoices {
 			continue
 		}
+		keys := sortedTargetKeys(cands)
+		if len(keys) > component.MaxDecisionChoices {
+			for _, k := range keys[component.MaxDecisionChoices:] {
+				delete(cands, k)
+			}
+			keys = keys[:component.MaxDecisionChoices]
+		}
 		criteria := orderedMap{}
-		for _, idx := range sortedTargetKeys(cands) {
+		for _, idx := range keys {
 			a := cands[idx]
 			c := map[string]any{"element": "[" + idx + "] " + a.Label}
 			switch {
@@ -291,6 +304,13 @@ func readDecision(raw []byte, operations map[string]string, targets map[string]m
 	}
 	d := decision{Operation: opAns.Choice, Confidence: *opAns.Confidence, Usage: reply.Usage}
 	if cands, ok := targets[d.Operation]; ok {
+		if len(cands) == 1 {
+			// Asked no question: its only candidate.
+			for k, a := range cands {
+				d.Target, d.Action = k, a
+			}
+			return d, nil
+		}
 		ta := reply.Answers[strings.ToLower(d.Operation)+"_target"]
 		if err := validChoice(ta, keysOfActions(cands)); err != nil {
 			return decision{}, err
