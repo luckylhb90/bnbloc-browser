@@ -33,6 +33,7 @@ var toolBrowse = map[string]any{
 			"confirmed": map[string]any{"type": "boolean", "description": "Resume: true only after the person who asked you said yes in the room in their own message (false: do not do it)."},
 			"file":      map[string]any{"type": "string", "description": "Resume an upload: a path inside your workspace (e.g. .room/attachments/att_1.pdf)."},
 			"reply":     map[string]any{"type": "string", "description": "Resume: a new instruction or what changed (\"they signed in\")."},
+			"stop":      map[string]any{"type": "boolean", "description": "End run, or without run every run of this room you started for this person: its tab closes and its view leaves the room."},
 		},
 	},
 }
@@ -63,10 +64,14 @@ var errNotRequester = errors.New("this run acts for someone else; only their tur
 // browse starts a run, or resumes the one it names.
 func (t *tools) browse(ctx context.Context, args json.RawMessage) (any, *rpcError) {
 	var named struct {
-		Run string `json:"run"`
+		Run  string `json:"run"`
+		Stop bool   `json:"stop"`
 	}
 	if err := json.Unmarshal(args, &named); err != nil {
 		return nil, invalidArgs(err)
+	}
+	if named.Stop {
+		return t.stop(ctx, strings.TrimSpace(named.Run))
 	}
 	if strings.TrimSpace(named.Run) != "" {
 		return t.resume(ctx, args)
@@ -149,6 +154,53 @@ func (t *tools) waitingSignIn(ctx context.Context, site string, sess component.R
 		return res
 	}
 	return nil
+}
+
+// stop ends run id, or ("" ) every run of the requester in the session's
+// room: its keeper ends its view in the room, its tab closes, and the run
+// is forgotten. A run another call drives is left (reported busy).
+func (t *tools) stop(ctx context.Context, id string) (any, *rpcError) {
+	sess, err := t.gw.session(ctx)
+	if err != nil {
+		return nil, toolFailure(err)
+	}
+	ids := []string{id}
+	if id == "" {
+		ids = t.runner.store.ids()
+	}
+	var stopped, busy []string
+	for _, rid := range ids {
+		r, err := t.runner.store.load(rid)
+		switch {
+		case err != nil && id != "":
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		case err != nil:
+			continue
+		case r.Requester != sess.Requester && id != "":
+			return nil, toolFailure(errNotRequester)
+		case r.Requester != sess.Requester || r.RoomID != sess.RoomID:
+			continue
+		}
+		unlock, r, rerr := t.lockRun(rid)
+		if rerr != nil {
+			busy = append(busy, rid)
+			continue
+		}
+		t.runner.store.stopKeeper(r.ID)
+		if err := t.runner.host.close(ctx, r.Tab); err != nil && !errors.Is(err, errTabGone) {
+			unlock()
+			return nil, toolFailure(err)
+		}
+		t.runner.store.remove(r.ID)
+		unlock()
+		stopped = append(stopped, r.ID)
+	}
+	head := map[string]any{"stopped": stopped, "note": "their tabs are closed and their views gone from the room"}
+	if len(busy) > 0 {
+		head["busy"] = busy
+		head["note"] = "busy runs are in another call and were not stopped; " + head["note"].(string)
+	}
+	return map[string]any{"content": []any{map[string]any{"type": "text", "text": mustJSON(head)}}}, nil
 }
 
 // defaultThreshold is the irreversibility pause (decided 2026-10-17).

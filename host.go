@@ -130,6 +130,8 @@ type browserHost interface {
 	// open starts a run's tab; attach reattaches it by id (errTabGone).
 	open(ctx context.Context) (tabHandle, error)
 	attach(ctx context.Context, id string) (tabHandle, error)
+	// close closes a run's tab by id (errTabGone when it is gone).
+	close(ctx context.Context, id string) error
 	// finishedDownloads moves the run's finished downloads into dir and
 	// answers their dir-relative names.
 	finishedDownloads(tabID, dir string) []string
@@ -158,6 +160,25 @@ func (h *localHost) attach(ctx context.Context, targetID string) (tabHandle, err
 		return nil, err
 	}
 	return attachTab(ctx, c, targetID)
+}
+
+// close closes a run's tab by its target id.
+func (h *localHost) close(ctx context.Context, targetID string) error {
+	c, err := h.connect(ctx)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Success bool `json:"success"`
+	}
+	if err := c.call(ctx, "", "Target.closeTarget", map[string]any{"targetId": targetID}, &out); err != nil {
+		var ce *cdpError
+		if errors.As(err, &ce) {
+			return errTabGone // no such target
+		}
+		return err
+	}
+	return nil
 }
 
 // readEndpoint reads a launcher's endpoint file.

@@ -719,3 +719,42 @@ func TestNewestKeeperHoldsTheJob(t *testing.T) {
 		t.Fatalf("the older keeper ended the job's view (%d ends)", ends)
 	}
 }
+
+// The agent ends runs: one by id, or every run of this room it started for
+// the person. Each one's view ends (its keeper is stopped), its tab closes
+// and it is forgotten; another room's run is not touched.
+func TestStopEndsRuns(t *testing.T) {
+	p, _, _ := expensePortal()
+	h := newHarness(t, p, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	h.tools.keeper = func(run, job string) error { return nil }
+	a, _ := h.call("browse", map[string]any{"goal": "a", "url": "https://portal.example.com/"})
+	b, _ := h.call("browse", map[string]any{"goal": "b", "url": "https://travel.example.org/"})
+	h.relay.bind(component.RelaySession{JobID: "job-9", RoomID: "room-2", Requester: "maya", Owner: "maya", MessageSeq: 3, ByRequester: true})
+	other, _ := h.call("browse", map[string]any{"goal": "c", "url": "https://intranet.example.net/"})
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
+
+	_, text := h.call("browse", map[string]any{"stop": true})
+	if !strings.Contains(text, a["run"].(string)) || !strings.Contains(text, b["run"].(string)) || strings.Contains(text, other["run"].(string)) {
+		t.Fatalf("stop = %s", text)
+	}
+	store := h.tools.runner.store
+	for _, r := range []any{a["run"], b["run"]} {
+		if _, err := store.load(r.(string)); err == nil {
+			t.Fatalf("%v was kept", r)
+		}
+	}
+	h.host.mu.Lock()
+	tabs := len(h.host.pages)
+	h.host.mu.Unlock()
+	if tabs != 1 {
+		t.Fatalf("%d tabs open, want only the other room's", tabs)
+	}
+	// By id, from the other room's turn.
+	h.relay.bind(component.RelaySession{JobID: "job-10", RoomID: "room-2", Requester: "maya", Owner: "maya", MessageSeq: 4, ByRequester: true})
+	if _, text := h.call("browse", map[string]any{"run": other["run"], "stop": true}); !strings.Contains(text, other["run"].(string)) {
+		t.Fatalf("stop by id = %s", text)
+	}
+	if _, err := store.load(other["run"].(string)); err == nil {
+		t.Fatal("the run stopped by id was kept")
+	}
+}

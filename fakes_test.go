@@ -230,6 +230,16 @@ func (h *fakeHost) attach(_ context.Context, id string) (tabHandle, error) {
 	return &fakeTab{fakePage: p, id: id}, nil
 }
 
+func (h *fakeHost) close(_ context.Context, id string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.pages[id]; !ok {
+		return errTabGone
+	}
+	delete(h.pages, id)
+	return nil
+}
+
 func (h *fakeHost) finishedDownloads(tabID, dir string) []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
