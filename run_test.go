@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -756,5 +757,58 @@ func TestStopEndsRuns(t *testing.T) {
 	}
 	if _, err := store.load(other["run"].(string)); err == nil {
 		t.Fatal("the run stopped by id was kept")
+	}
+}
+
+// A page that stops answering (a dialog the picture cannot show, a hung
+// page) keeps its view: the keeper ends only once the tab is gone.
+func TestKeeperHoldsAnUnresponsivePage(t *testing.T) {
+	signIn := &fakeDoc{url: "https://login.idp.example.net/authorize", title: "Sign in", text: "Sign in", key: "idp", actions: []action{
+		{Kind: "secret", Node: node(1), Role: "textbox", Label: "Password"},
+	}}
+	page := &fakePage{doc: signIn}
+	h := newHarness(t, page, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	var mu sync.Mutex
+	ends := 0
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
+		mu.Lock()
+		defer mu.Unlock()
+		if post.End {
+			ends++
+		}
+		return component.LiveFrameReply{Watching: true}
+	}
+	h.tools.keeper = func(run, job string) error { return nil }
+	head, _ := h.call("browse", map[string]any{"goal": "sign in", "url": "https://portal.example.com/"})
+	run := head["run"].(string)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- keep(ctx, h.tools.gw, h.host, h.tools.runner.store, run, "job-1") }()
+	time.Sleep(300 * time.Millisecond)
+	page.mu.Lock()
+	page.hung = true
+	page.mu.Unlock()
+	select {
+	case err := <-done:
+		t.Fatalf("the keeper ended on a page that only stopped answering: %v", err)
+	case <-time.After(2 * time.Second):
+	}
+	mu.Lock()
+	if ends != 0 {
+		mu.Unlock()
+		t.Fatalf("the view was ended (%d) while its tab is open", ends)
+	}
+	mu.Unlock()
+	h.host.mu.Lock()
+	delete(h.host.pages, "tab-1")
+	h.host.mu.Unlock()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errTabGone) {
+			t.Fatalf("keeper = %v, want errTabGone", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the keeper outlived its tab")
 	}
 }

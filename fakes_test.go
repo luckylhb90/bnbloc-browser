@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -60,6 +61,9 @@ type fakePage struct {
 	lastNode     int
 	// onAutoPost is the hand-off page's form submit (autoPostJS).
 	onAutoPost func(p *fakePage)
+	// hung: the page answers no script and no capture (a dialog open, a
+	// hung renderer); its tab is still open.
+	hung bool
 }
 
 func (p *fakePage) set(d *fakeDoc) { p.doc = d }
@@ -78,6 +82,9 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 		return json.Unmarshal(b, out)
 	}
 	value := func(v any) error { return reply(map[string]any{"result": map[string]any{"value": v}}) }
+	if p.hung && (method == "Runtime.evaluate" || method == "Page.captureScreenshot") {
+		return errors.New("the page does not answer")
+	}
 	switch method {
 	case "Runtime.evaluate":
 		expr, _ := m["expression"].(string)

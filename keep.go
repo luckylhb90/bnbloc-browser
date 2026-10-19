@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +33,8 @@ import (
 //
 // No clock ends it: it waits for as long as the view waits.
 
-// keepFailures is how many failed looks at the tab in a row mean it is gone.
+// keepFailures is how many failed looks at the page in a row make the
+// keeper ask whether its tab is still open.
 const keepFailures = 3
 
 // keepPostFor bounds one look and post of the keeper.
@@ -158,9 +160,22 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 			failures = 0
 		}
 		if failures >= keepFailures {
-			cancel()
-			end()
-			return errTabGone
+			// A page that does not answer (a dialog the picture cannot
+			// show, a page that hangs) is not a closed tab: the view stays,
+			// with its last picture and the owner's input (focus brings the
+			// window forward), until the tab is gone from the browser.
+			probe, err := host.attach(tctx, r.Tab)
+			if errors.Is(err, errTabGone) {
+				cancel()
+				end()
+				return errTabGone
+			}
+			if err == nil {
+				probe.detach(tctx)
+			}
+			if failures == keepFailures {
+				logKeep("the page does not answer; holding the view while the tab is open")
+			}
 		}
 		every, ok := f.tick(tctx, &last)
 		cancel()
