@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -359,6 +360,7 @@ func TestRunningCheckpoint(t *testing.T) {
 		steps++
 		next := *p.doc
 		next.key = strings.Repeat("x", steps)
+		next.text = "Page " + strconv.Itoa(steps+1) // Next leads somewhere new
 		p.doc = &next
 	}
 	h := newHarness(t, p, func(q decReq) (string, string) {
@@ -955,5 +957,35 @@ func TestKeeperCarriesThePagesDialog(t *testing.T) {
 	defer page.mu.Unlock()
 	if page.dialog != nil || len(page.answers) != 2 || page.answers[1] {
 		t.Fatalf("the open dialog was left behind: %+v answers %v", page.dialog, page.answers)
+	}
+}
+
+// A loop the page hides from stall detection (each click changes it, the
+// next changes it back) stops the run: the same operation on the same
+// element three times in four steps.
+func TestRunStopsRepeatingTheSameStep(t *testing.T) {
+	p, form, _ := expensePortal()
+	open := &fakeDoc{url: form.url, title: form.title, text: "New expense, comments open", key: "open", actions: form.actions}
+	p.onClick = func(p *fakePage, n int) {
+		if n == 2 {
+			if p.doc.key == "open" {
+				p.doc = form
+			} else {
+				p.doc = open
+			}
+		}
+	}
+	h := newHarness(t, p, func(q decReq) (string, string) { return opClick, "Preview" })
+	head, text := h.call("browse", map[string]any{"goal": "read the expense", "url": "https://portal.example.com/expenses/new"})
+	if head["checkpoint"] != cpBlocked || !strings.Contains(head["reason"].(string), "same operation on the same element") {
+		t.Fatalf("checkpoint = %v", head)
+	}
+	if got := countClicks(p, 2); got != repeatSteps {
+		t.Fatalf("clicked %d times, want %d", got, repeatSteps)
+	}
+	// Next, Next, Next to new pages each time is progress
+	// (TestRunningCheckpoint).
+	if i, j := strings.Index(text, "untrusted-content"), strings.Index(text, "Preview"); i < 0 || j < i {
+		t.Fatalf("the element is not fenced as the page's: %s", text)
 	}
 }

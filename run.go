@@ -46,6 +46,42 @@ const (
 // time, decides (jev_ultrafast/agent.py:153-158).
 const stallSteps = 3
 
+// repeatSteps of the last repeatWindow executed steps doing the same
+// operation on the same element, and coming back to a page they were on,
+// are a loop however the page changed in between (QA 2026-10-19: a comment
+// box opened and closed by clicks on it, which stall detection never saw).
+// The same step that leads somewhere new each time (Next, Load more) is
+// progress.
+const (
+	repeatSteps  = 3
+	repeatWindow = 4
+)
+
+// repeating answers the last executed step when it repeats a loop's worth
+// (repeatSteps of the last repeatWindow); a WAIT never does.
+func (r *runState) repeating() (historyRecord, bool) {
+	if len(r.History) < repeatSteps {
+		return historyRecord{}, false
+	}
+	last := r.History[len(r.History)-1]
+	if last.Kind == "wait" {
+		return historyRecord{}, false
+	}
+	n, revisited := 0, false
+	seen := map[string]bool{}
+	for _, h := range r.History[max(0, len(r.History)-repeatWindow):] {
+		if h.Operation != last.Operation || h.Action != last.Action {
+			continue
+		}
+		n++
+		if h.After != "" {
+			revisited = revisited || seen[h.After]
+			seen[h.After] = true
+		}
+	}
+	return last, n >= repeatSteps && revisited
+}
+
 // runState is one run, kept in the state directory by run id.
 type runState struct {
 	ID        string `json:"id"`
@@ -94,6 +130,9 @@ type historyRecord struct {
 	PageChanged *bool   `json:"pageChanged,omitempty"`
 	Confidence  float64 `json:"confidence"`
 	AtMs        int64   `json:"atMs"`
+	// After is the page's fingerprint after the step ("" unknown): a loop
+	// comes back to a page it was on.
+	After string `json:"after,omitempty"`
 }
 
 // checkpoint is a pause: what it is, what it is about, and what the agent
@@ -342,6 +381,10 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 		if r.Unchanged >= stallSteps {
 			return &checkpoint{Kind: cpBlocked, Reason: fmt.Sprintf("the last %d steps changed nothing on the page; read the page below and resume with a new instruction", stallSteps)}, nil
 		}
+		if last, ok := r.repeating(); ok {
+			return &checkpoint{Kind: cpBlocked, Element: &checkpointElement{Label: last.Action},
+				Reason: fmt.Sprintf("the run did the same operation on the same element %d times in its last %d steps without getting further (the page can change and change back); read the page below and resume with a new instruction", repeatSteps, repeatWindow)}, nil
+		}
 	}
 }
 
@@ -477,6 +520,7 @@ func (rn *runner) execute(ctx context.Context, r *runState, p browserPage, pg *p
 	rec := historyRecord{Step: len(r.History) + 1, Operation: d.Operation, Action: d.Action.Label, Kind: d.Action.Kind, Text: text, URL: pg.URL, Confidence: d.Confidence, AtMs: rn.now().UnixMilli()}
 	after, err := observe(ctx, p)
 	if err == nil {
+		rec.After = after.Fingerprint
 		changed := after.Fingerprint != pg.Fingerprint
 		rec.PageChanged = &changed
 		switch {
