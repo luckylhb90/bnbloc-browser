@@ -54,3 +54,8 @@ func tryLockFile(path string) (func(), bool, error) {
 		f.Close()
 	}, true, nil
 }
+
+// processAlive reports whether process pid is still running.
+func processAlive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}

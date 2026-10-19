@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -148,5 +151,138 @@ func TestExecutorOnChrome(t *testing.T) {
 	body, _, _, _ := stepRequest("m", pg5, "g", nil)
 	if raw := mustJSON(body); strings.Contains(raw, "hunter2") {
 		t.Fatal("a password's value reached the decision request")
+	}
+}
+
+// A page's dialog on a real Chrome (dialog.go): a call stuck behind it is
+// released at once (errDialogOpen) instead of waiting for good, the tab
+// reports it, and once answered the page runs on.
+func TestDialogOnChrome(t *testing.T) {
+	c := startTestChrome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<title>q</title><script>setTimeout(() => { document.title = "answered:" + confirm("Leave the sign-in?") }, 200)</script>`))
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tb, err := openTab(ctx, c, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := navigate(ctx, tb, srv.URL+"/"); err != nil {
+		t.Fatal(err)
+	}
+	// An evaluation waiting on a promise that resolves after the dialog.
+	start := time.Now()
+	var v string
+	err = evaluate(ctx, tb, `new Promise(r => setTimeout(() => r(document.title), 1500))`, &v)
+	if !errors.Is(err, errDialogOpen) || time.Since(start) > 1200*time.Millisecond {
+		t.Fatalf("evaluate behind a dialog = %v after %v, want errDialogOpen at once", err, time.Since(start))
+	}
+	d := tb.openDialog()
+	if d == nil || d.Kind != "confirm" || d.Message != "Leave the sign-in?" {
+		t.Fatalf("open dialog = %+v", d)
+	}
+	if _, err := observe(ctx, tb); !errors.Is(err, errDialogOpen) {
+		t.Fatalf("observe with a dialog open = %v", err)
+	}
+	if err := tb.answerDialog(ctx, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if tb.openDialog() == nil && evaluate(ctx, tb, "document.title", &v) == nil && v == "answered:true" {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("after the answer: dialog %+v, title %q", tb.openDialog(), v)
+}
+
+// A browser an older version started (its record names no flags, or other
+// ones) is closed and started again with this version's flags when it
+// shows no web page; while it shows one it is used as it is.
+func TestOutdatedBrowserRestarts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("a real browser: not in -short")
+	}
+	if _, err := findChrome(os.Getenv("BNBLOC_BROWSER_CHROME")); err != nil {
+		t.Skip("no Chrome or Chromium on this machine")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// Not t.TempDir: a killed browser may still be writing its profile
+	// when the test's own cleanup runs.
+	dir, err := os.MkdirTemp("", "bnbloc-browser-restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { time.Sleep(time.Second); _ = os.RemoveAll(dir) })
+	cfg := hostConfig{Profile: dir + "/profile", Headless: true, EndpointFile: dir + "/endpoint.json", Chrome: os.Getenv("BNBLOC_BROWSER_CHROME")}
+	start := func() endpointRecord {
+		t.Helper()
+		cmd, url, err := startChrome(ctx, cfg, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := endpointRecord{URL: url, PID: cmd.Process.Pid} // an older version's record: no flags
+		// Reaped here once it exits (as launchd reaps a real one, whose
+		// starter is long gone): an unreaped child would look alive.
+		go func() { _ = cmd.Wait() }()
+		if err := writeEndpoint(cfg.EndpointFile, rec); err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	kill := func(pid int) {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+	}
+
+	// Showing a web page: used as it is.
+	old := start()
+	t.Cleanup(func() { kill(old.PID) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<title>signing in</title>")) }))
+	t.Cleanup(srv.Close)
+	var c0 *cdpConn
+	c0, err = dialCDP(ctx, old.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		TargetID string `json:"targetId"`
+	}
+	if err := c0.call(ctx, "", "Target.createTarget", map[string]any{"url": srv.URL}, &created); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	h := newLocalHost(cfg)
+	if _, err := h.connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := readEndpoint(cfg.EndpointFile); rec.PID != old.PID || !processAlive(old.PID) {
+		t.Fatalf("a browser showing a web page was restarted: %+v", rec)
+	}
+
+	// No web page left: closed, and started again with this version's flags.
+	_ = c0.call(ctx, "", "Target.closeTarget", map[string]any{"targetId": created.TargetID}, nil)
+	c0.close()
+	time.Sleep(300 * time.Millisecond)
+	h = newLocalHost(cfg)
+	if _, err := h.connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := readEndpoint(cfg.EndpointFile)
+	if ok {
+		t.Cleanup(func() { kill(rec.PID) })
+	}
+	if !ok || rec.PID == old.PID || rec.Flags != flagsKey(cfg) {
+		t.Fatalf("after: %+v (old pid %d)", rec, old.PID)
+	}
+	if processAlive(old.PID) {
+		out, _ := exec.Command("ps", "-o", "pid,stat,command", "-p", strconv.Itoa(old.PID)).CombinedOutput()
+		t.Fatalf("the outdated browser is still running:\n%s", out)
 	}
 }

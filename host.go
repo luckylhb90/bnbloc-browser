@@ -61,6 +61,21 @@ func defaultProfile() string {
 type endpointRecord struct {
 	URL string `json:"url"`
 	PID int    `json:"pid"`
+	// Flags are the flags the browser was started with (flagsKey): a
+	// browser an older version started runs without this one's.
+	Flags string `json:"flags,omitempty"`
+}
+
+// flagsKey is the flags this version starts the browser with, but its
+// profile.
+func flagsKey(cfg hostConfig) string {
+	var out []string
+	for _, a := range chromeArgs(cfg) {
+		if !strings.HasPrefix(a, "--user-data-dir=") {
+			out = append(out, a)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // localHost connects to the member's browser, once per process.
@@ -105,6 +120,9 @@ func (h *localHost) connect(ctx context.Context) (*cdpConn, error) {
 	default:
 		if rec, ok := readEndpoint(h.cfg.EndpointFile); ok {
 			c, err = dialCDP(ctx, rec.URL)
+			if err == nil && rec.Flags != flagsKey(h.cfg) && h.closeOutdated(ctx, c, rec) {
+				c = nil
+			}
 		}
 		if c == nil {
 			var url string
@@ -122,6 +140,40 @@ func (h *localHost) connect(ctx context.Context) (*cdpConn, error) {
 	}
 	h.conn = c
 	return c, nil
+}
+
+// closeOutdated closes a browser an older version started (its flags are
+// not this version's: QA 2026-10-19, a browser started the day before kept
+// running without the flags that keep background windows painting) when
+// it shows no web page, and reports whether it did; the next launch starts
+// it with this version's flags. A browser showing a web page (someone may
+// be signing in) is used as it is.
+func (h *localHost) closeOutdated(ctx context.Context, c *cdpConn, rec endpointRecord) bool {
+	var targets struct {
+		TargetInfos []struct {
+			Type string `json:"type"`
+			URL  string `json:"url"`
+		} `json:"targetInfos"`
+	}
+	if c.call(ctx, "", "Target.getTargets", nil, &targets) != nil {
+		return false
+	}
+	for _, t := range targets.TargetInfos {
+		if t.Type == "page" && (strings.HasPrefix(t.URL, "http://") || strings.HasPrefix(t.URL, "https://")) {
+			return false
+		}
+	}
+	_ = c.call(ctx, "", "Browser.close", nil, nil)
+	c.close()
+	deadline := time.Now().Add(15 * time.Second)
+	for rec.PID > 0 && processAlive(rec.PID) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if rec.PID > 0 && processAlive(rec.PID) {
+		return false // it did not go: keep using it rather than start a second one
+	}
+	_ = os.Remove(h.cfg.EndpointFile)
+	return true
 }
 
 // browserHost is where runs' tabs live: the member's dedicated profile
@@ -338,7 +390,7 @@ func (h *localHost) launchDetached(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writeEndpoint(h.cfg.EndpointFile, endpointRecord{URL: url, PID: cmd.Process.Pid}); err != nil {
+	if err := writeEndpoint(h.cfg.EndpointFile, endpointRecord{URL: url, PID: cmd.Process.Pid, Flags: flagsKey(h.cfg)}); err != nil {
 		return "", err
 	}
 	_ = cmd.Process.Release()
@@ -359,7 +411,7 @@ func runLauncher(ctx context.Context, cfg hostConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := writeEndpoint(cfg.EndpointFile, endpointRecord{URL: url, PID: cmd.Process.Pid}); err != nil {
+	if err := writeEndpoint(cfg.EndpointFile, endpointRecord{URL: url, PID: cmd.Process.Pid, Flags: flagsKey(cfg)}); err != nil {
 		_ = cmd.Process.Kill()
 		return err
 	}

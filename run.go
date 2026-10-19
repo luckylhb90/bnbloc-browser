@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckylhb90/bnbloc/component"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -69,8 +70,13 @@ type runState struct {
 	// view under it after the turn (keep.go).
 	PausedJob string `json:"pausedJob,omitempty"`
 	// PausedURL is the page the run paused on.
-	PausedURL string          `json:"pausedUrl,omitempty"`
-	History   []historyRecord `json:"history"`
+	PausedURL string `json:"pausedUrl,omitempty"`
+	// AcceptDialog is the page's question the person agreed to (a
+	// confirmed resume of a dialog's checkpoint): the run accepts the next
+	// dialog asking it, with DialogText for a prompt.
+	AcceptDialog string          `json:"acceptDialog,omitempty"`
+	DialogText   string          `json:"dialogText,omitempty"`
+	History      []historyRecord `json:"history"`
 	// Unchanged counts consecutive executed steps that changed nothing.
 	Unchanged   int   `json:"unchanged"`
 	Decisions   int   `json:"decisions"`
@@ -107,6 +113,9 @@ type checkpoint struct {
 	// Waiting is what the person does in the live view (needs_human),
 	// in their words; the room shows it.
 	Waiting string `json:"waiting,omitempty"`
+	// Dialog is the question a page's dialog asked (page text: fenced
+	// wherever it is shown to the agent).
+	Dialog string `json:"dialog,omitempty"`
 	// pending is the step decided before the pause, run when it is answered
 	// (a confirmed click, a supplied value, an allowed site).
 	Pending *pendingStep `json:"pending,omitempty"`
@@ -278,7 +287,16 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 		if dl := rn.collectDownloads(r); dl != nil {
 			return dl, nil
 		}
+		if d := dialogOf(p); d != nil {
+			if cp := rn.answerDialog(ctx, r, p, d); cp != nil {
+				return cp, nil
+			}
+			continue
+		}
 		pg, err := observe(ctx, p)
+		if errors.Is(err, errDialogOpen) {
+			continue // answered above, next time round
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -297,8 +315,8 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 		}
 		cp, err := rn.step(ctx, r, p, pg)
 		if err != nil {
-			if errors.Is(err, errStale) {
-				continue // the page moved: observe again, act on nothing stale
+			if errors.Is(err, errStale) || errors.Is(err, errDialogOpen) {
+				continue // the page moved, or asks something: look again, act on nothing stale
 			}
 			return nil, err
 		}
@@ -309,6 +327,44 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 			return &checkpoint{Kind: cpBlocked, Reason: fmt.Sprintf("the last %d steps changed nothing on the page; read the page below and resume with a new instruction", stallSteps)}, nil
 		}
 	}
+}
+
+// answerDialog is the run's answer to the page's dialog while it works
+// (dialog.go): an alert is accepted and recorded in the history; a dialog
+// that asks for a decision (confirm, prompt, leave-page) is the person's,
+// so the run dismisses it and pauses with the question, unless the person
+// already agreed to that very question (AcceptDialog). nil goes on.
+func (rn *runner) answerDialog(ctx context.Context, r *runState, p browserPage, d *component.LiveDialog) *checkpoint {
+	dp, ok := p.(dialogPage)
+	if !ok {
+		return nil
+	}
+	if d.Kind == component.LiveDialogAlert {
+		_ = dp.answerDialog(ctx, true, "")
+		r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: "DIALOG", Action: "the page showed a message: " + d.Message, Kind: "dialog", AtMs: rn.now().UnixMilli()})
+		return nil
+	}
+	question := dialogQuestion(d)
+	if r.AcceptDialog != "" && r.AcceptDialog == question {
+		text := r.DialogText
+		r.AcceptDialog, r.DialogText = "", ""
+		_ = dp.answerDialog(ctx, true, text)
+		return nil
+	}
+	_ = dp.answerDialog(ctx, false, "")
+	if d.Kind == component.LiveDialogPrompt {
+		return &checkpoint{Kind: cpNeedsInput, Dialog: question, Reason: "the page asked for text before going on (its question is shown below); ask the person who asked you, then resume with value"}
+	}
+	return &checkpoint{Kind: cpNeedsConfirmation, Dialog: question, Reason: "the page asked a question before going on (shown below); it was answered no for now. Ask the person who asked you, and resume with confirmed once they answer in the room"}
+}
+
+// dialogQuestion is what a dialog asks (a leave-page dialog has no text of
+// its own).
+func dialogQuestion(d *component.LiveDialog) string {
+	if d.Message == "" && d.Kind == component.LiveDialogBeforeUnload {
+		return "Leave this page? Changes may not be saved."
+	}
+	return d.Message
 }
 
 // step decides one step on pg and runs it, or answers the checkpoint it

@@ -30,6 +30,8 @@ type cdpConn struct {
 	events chan cdpEvent
 	closed chan struct{}
 	err    error
+	// dialogs is each session's open dialog (dialog.go).
+	dialogs map[string]*dialogState
 }
 
 type cdpReply struct {
@@ -132,6 +134,7 @@ func (c *cdpConn) read() {
 			}
 			continue
 		}
+		c.noteDialog(m.SessionID, m.Method, m.Params)
 		select {
 		case c.events <- cdpEvent{Method: m.Method, Session: m.SessionID, Params: m.Params}:
 		default: // nobody is reading: the run polls what it needs
@@ -142,6 +145,10 @@ func (c *cdpConn) read() {
 // call sends one method (session "" = the browser) and waits for its
 // answer; out, when set, receives the result.
 func (c *cdpConn) call(ctx context.Context, session, method string, params any, out any) error {
+	opened, err := c.dialogGate(session, method)
+	if err != nil {
+		return err
+	}
 	c.mu.Lock()
 	if c.err != nil {
 		c.mu.Unlock()
@@ -178,6 +185,13 @@ func (c *cdpConn) call(ctx context.Context, session, method string, params any, 
 			return json.Unmarshal(r.Result, out)
 		}
 		return nil
+	case <-opened:
+		// The page opened a dialog: it answers nothing until someone
+		// answers that (dialog.go).
+		c.mu.Lock()
+		delete(c.wait, id)
+		c.mu.Unlock()
+		return errDialogOpen
 	case <-ctx.Done():
 		c.mu.Lock()
 		delete(c.wait, id)

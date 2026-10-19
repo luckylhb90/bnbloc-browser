@@ -63,6 +63,8 @@ type liveFeed struct {
 	isReady    bool
 	// closed: the owner closed the view from the room (LiveInputClose).
 	closed bool
+	// dialog is the page's open dialog the last post carried.
+	dialog *component.LiveDialog
 	// refused is the last refusal of a post (the keeper logs it).
 	refusedBy string
 
@@ -157,11 +159,22 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	// A window the member minimized never paints, and its capture never
 	// answers: bounded, the feed goes on (the last picture stays, input
 	// still arrives) until the window shows again.
-	cctx, cancel := context.WithTimeout(ctx, liveCaptureFor)
-	shot, view, err := capture(cctx, f.tab, liveQuality)
-	cancel()
+	// A page that waits on its dialog draws nothing new: the view keeps
+	// its last picture and carries the dialog, which the controller
+	// answers (dialog.go).
+	dialog := dialogOf(f.tab)
+	var shot string
+	var view viewport
+	err := errDialogOpen
+	if dialog == nil {
+		cctx, cancel := context.WithTimeout(ctx, liveCaptureFor)
+		shot, view, err = capture(cctx, f.tab, liveQuality)
+		cancel()
+	}
 	f.mu.Lock()
-	post := liveFramePost{Run: f.run, Waiting: f.waiting}
+	post := liveFramePost{Run: f.run, Waiting: f.waiting, Dialog: dialog}
+	dialogChanged := !sameDialog(dialog, f.dialog)
+	f.dialog = dialog
 	f.mu.Unlock()
 	if err == nil && shot != "" {
 		if sum := sha256.Sum256([]byte(shot)); sum != *last {
@@ -191,7 +204,7 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	// it only while posts go on.
 	keep := f.waiting != "" && time.Since(f.posted) >= component.LiveKeepEverySec*time.Second/2
 	f.mu.Unlock()
-	if post.Data == "" && !keep && !readyChanged {
+	if post.Data == "" && !keep && !readyChanged && !dialogChanged {
 		return f.pace(), true
 	}
 	// While someone drives, their input is the input loop's (inputs): a
@@ -240,7 +253,7 @@ func (f *liveFeed) inputs() {
 	for ctx.Err() == nil {
 		controlled := f.holder() != ""
 		f.mu.Lock()
-		post := liveFramePost{Run: f.run, Waiting: f.waiting, Ready: f.isReady, WaitInput: controlled}
+		post := liveFramePost{Run: f.run, Waiting: f.waiting, Ready: f.isReady, WaitInput: controlled, Dialog: f.dialog}
 		f.mu.Unlock()
 		pctx, pcancel := context.WithTimeout(ctx, liveInputPostFor)
 		reply, err := f.gw.liveFrame(pctx, f.job, post)
@@ -342,6 +355,13 @@ type liveFramePost struct {
 	// LeaveInput: the post takes none of the queued input (the input
 	// loop's; component.LiveFramePost.LeaveInput).
 	LeaveInput bool `json:"leaveInput,omitempty"`
+	// Dialog is the page's open dialog (component.LiveFramePost.Dialog).
+	Dialog *component.LiveDialog `json:"dialog,omitempty"`
+}
+
+// sameDialog reports whether a and b are the same dialog (or both none).
+func sameDialog(a, b *component.LiveDialog) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
 // liveFrame posts one frame (or an empty post) through the relay, under
@@ -407,6 +427,10 @@ func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput) {
 			f.mu.Lock()
 			f.closed = true
 			f.mu.Unlock()
+		case component.LiveInputDialog:
+			if dp, ok := f.tab.(dialogPage); ok && dp.openDialog() != nil {
+				_ = dp.answerDialog(ctx, e.Action == "accept", e.Text)
+			}
 		}
 	}
 }

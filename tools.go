@@ -252,6 +252,11 @@ func (t *tools) resume(ctx context.Context, args json.RawMessage) (any, *rpcErro
 			if in.Value == nil {
 				return checkpointResult(r, cp, nil, "still waiting: give value, the text to type"), nil
 			}
+			if cp.Dialog != "" {
+				// The page's prompt: answered with the value when it asks again.
+				r.AcceptDialog, r.DialogText = cp.Dialog, *in.Value
+				break
+			}
 			if cp.Element != nil {
 				if r.Values == nil {
 					r.Values = map[string]string{}
@@ -270,6 +275,11 @@ func (t *tools) resume(ctx context.Context, args json.RawMessage) (any, *rpcErro
 			}
 			if why := consentHolds(sess, r); why != "" {
 				return checkpointResult(r, cp, nil, why), nil
+			}
+			if cp.Dialog != "" {
+				// The page's question, agreed to: accepted when it asks again.
+				r.AcceptDialog = cp.Dialog
+				break
 			}
 			switch cp.Kind {
 			case cpLeavingSite:
@@ -308,6 +318,9 @@ func consentHolds(sess component.RelaySession, r *runState) string {
 }
 
 func describeDeclined(cp *checkpoint) string {
+	if cp.Dialog != "" {
+		return "answer no to the page's question, and do not do what made it ask."
+	}
 	switch cp.Kind {
 	case cpLeavingSite:
 		return "do not go to " + cp.Site + "."
@@ -325,6 +338,9 @@ func describeDeclined(cp *checkpoint) string {
 func (t *tools) drive(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, resume func() error) (any, *rpcError) {
 	live := startLive(t.gw, tb, r.ID)
 	defer live.end()
+	// Nobody could answer a dialog the call leaves open (dialog.go); it runs
+	// before the view ends, so the view's last post says it is gone.
+	defer dismissDialog(context.Background(), tb)
 	t.runner.held = live.holder
 	defer func() { t.runner.held = nil }()
 	if resume != nil {
@@ -454,6 +470,9 @@ func checkpointResult(r *runState, cp *checkpoint, pv *pageView, note string) an
 	}
 	text := mustJSON(head)
 	var site strings.Builder
+	if cp != nil && cp.Dialog != "" {
+		site.WriteString("The page asks: " + cp.Dialog + "\n\n")
+	}
 	if cp != nil && cp.Element != nil {
 		site.WriteString("The element: " + cp.Element.Label)
 		if cp.Element.Href != "" {

@@ -131,6 +131,8 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		return err
 	}
 	defer tb.detach(context.Background())
+	// Nobody could answer a dialog this keeper leaves open (dialog.go).
+	defer dismissDialog(context.Background(), tb)
 	f := newFeed(gw, tb, r.ID)
 	f.job, f.waiting = job, r.Checkpoint.Waiting
 	f.ready = func(ctx context.Context) bool {
@@ -154,10 +156,11 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		}
 		tctx, cancel := context.WithTimeout(ctx, keepPostFor)
 		var state string
-		if evaluate(tctx, tb, "document.readyState", &state) != nil {
+		switch err := evaluate(tctx, tb, "document.readyState", &state); {
+		case err == nil, errors.Is(err, errDialogOpen):
+			failures = 0 // a page waiting on its dialog answers by the dialog
+		default:
 			failures++
-		} else {
-			failures = 0
 		}
 		if failures >= keepFailures {
 			// A page that does not answer (a dialog the picture cannot

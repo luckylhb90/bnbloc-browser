@@ -812,3 +812,148 @@ func TestKeeperHoldsAnUnresponsivePage(t *testing.T) {
 		t.Fatal("the keeper outlived its tab")
 	}
 }
+
+// A dialog the page opens while the run works: a question is the person's
+// (dismissed, the run pauses with it fenced; the requester's confirmed
+// resume lets the run accept that question when it asks again), an alert
+// is accepted and recorded.
+func TestRunAnswersThePagesDialogs(t *testing.T) {
+	p, form, _ := expensePortal()
+	previewed := &fakeDoc{url: "https://portal.example.com/expenses/new", title: "Previewed", text: "Preview", key: "previewed"}
+	p.onClick = func(p *fakePage, n int) {
+		if n == 2 {
+			p.dialog = &component.LiveDialog{Kind: component.LiveDialogConfirm, Message: "Discard your draft?"}
+		}
+	}
+	p.onAnswer = func(p *fakePage, accept bool, _ string) {
+		if accept {
+			p.doc = previewed
+		}
+	}
+	h := newHarness(t, p, func(q decReq) (string, string) {
+		if page, _ := q.State["page"].(map[string]any); page["title"] == "Previewed" {
+			return opDone, ""
+		}
+		return opClick, "Preview"
+	})
+	head, text := h.call("browse", map[string]any{"goal": "preview the expense", "url": "https://portal.example.com/expenses/new"})
+	if head["checkpoint"] != cpNeedsConfirmation || len(p.answers) != 1 || p.answers[0] {
+		t.Fatalf("first stop = %v (answers %v)", head, p.answers)
+	}
+	if i, j := strings.Index(text, "untrusted-content"), strings.Index(text, "Discard your draft?"); i < 0 || j < i {
+		t.Fatalf("the page's question is not fenced: %s", text)
+	}
+	run := head["run"].(string)
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
+	head, _ = h.call("browse", map[string]any{"run": run, "confirmed": true})
+	if head["checkpoint"] != cpDone || len(p.answers) != 2 || !p.answers[1] {
+		t.Fatalf("after the confirmed resume = %v (answers %v)", head, p.answers)
+	}
+
+	// An alert: accepted, recorded, and the run goes on.
+	p.doc = form
+	p.answers = nil
+	p.onClick = func(p *fakePage, n int) {
+		if n == 2 {
+			p.dialog = &component.LiveDialog{Kind: component.LiveDialogAlert, Message: "Saved as draft"}
+		}
+	}
+	p.onAnswer = func(p *fakePage, _ bool, _ string) { p.doc = previewed }
+	head, _ = h.call("browse", map[string]any{"goal": "preview it", "url": "https://portal.example.com/expenses/new"})
+	if head["checkpoint"] != cpDone || len(p.answers) != 1 || !p.answers[0] {
+		t.Fatalf("alert run = %v (answers %v)", head, p.answers)
+	}
+	r, _ := h.tools.runner.store.load(head["run"].(string))
+	if last := r.History[len(r.History)-1]; last.Kind != "dialog" || !strings.Contains(last.Action, "Saved as draft") {
+		t.Fatalf("history = %+v", r.History)
+	}
+}
+
+// The keeper carries the page's dialog to the room and runs the answer
+// that comes back; one still open when it ends is dismissed (nobody could
+// answer it after).
+func TestKeeperCarriesThePagesDialog(t *testing.T) {
+	signIn := &fakeDoc{url: "https://login.idp.example.net/authorize", title: "Sign in", text: "Sign in", key: "idp", actions: []action{
+		{Kind: "secret", Node: node(1), Role: "textbox", Label: "Password"},
+	}}
+	page := &fakePage{doc: signIn}
+	h := newHarness(t, page, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	var mu sync.Mutex
+	var carried *component.LiveDialog
+	answer, keeping := false, false
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
+		mu.Lock()
+		defer mu.Unlock()
+		reply := component.LiveFrameReply{Watching: true}
+		if keeping {
+			reply.Controller = "maya" // the owner drives the view the keeper holds
+		}
+		if post.Dialog != nil {
+			carried = post.Dialog
+			if answer {
+				reply.Input = []component.LiveInput{{Type: component.LiveInputDialog, Action: "accept"}}
+			}
+		}
+		return reply
+	}
+	h.tools.keeper = func(run, job string) error { return nil }
+	head, _ := h.call("browse", map[string]any{"goal": "sign in", "url": "https://portal.example.com/"})
+	run := head["run"].(string)
+	if head["checkpoint"] != cpNeedsHuman {
+		t.Fatalf("checkpoint = %v", head)
+	}
+	store := h.tools.runner.store
+	mu.Lock()
+	keeping = true
+	mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- keep(ctx, h.tools.gw, h.host, store, run, "job-1") }()
+	time.Sleep(200 * time.Millisecond)
+	page.mu.Lock()
+	page.dialog = &component.LiveDialog{Kind: component.LiveDialogConfirm, Message: "Trust this device?"}
+	page.mu.Unlock()
+	waitUntil := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if ok() {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal(what)
+	}
+	waitUntil("the dialog never reached the room", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return carried != nil && carried.Message == "Trust this device?"
+	})
+	mu.Lock()
+	answer = true
+	mu.Unlock()
+	waitUntil("the room's answer never ran", func() bool {
+		page.mu.Lock()
+		defer page.mu.Unlock()
+		return len(page.answers) == 1 && page.answers[0]
+	})
+	// A dialog still open at the end is dismissed.
+	mu.Lock()
+	answer = false
+	mu.Unlock()
+	page.mu.Lock()
+	page.dialog = &component.LiveDialog{Kind: component.LiveDialogConfirm, Message: "Stay signed in?"}
+	page.mu.Unlock()
+	store.stopKeeper(run)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the keeper did not stop")
+	}
+	page.mu.Lock()
+	defer page.mu.Unlock()
+	if page.dialog != nil || len(page.answers) != 2 || page.answers[1] {
+		t.Fatalf("the open dialog was left behind: %+v answers %v", page.dialog, page.answers)
+	}
+}

@@ -64,6 +64,36 @@ type fakePage struct {
 	// hung: the page answers no script and no capture (a dialog open, a
 	// hung renderer); its tab is still open.
 	hung bool
+	// dialog is the page's open dialog: every call but its answer is
+	// refused (errDialogOpen) while it is, as on Chrome. onAnswer runs
+	// when it is answered; answers records each answer.
+	dialog   *component.LiveDialog
+	onAnswer func(p *fakePage, accept bool, text string)
+	answers  []bool
+}
+
+func (p *fakePage) openDialog() *component.LiveDialog {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dialog == nil {
+		return nil
+	}
+	d := *p.dialog
+	return &d
+}
+
+func (p *fakePage) answerDialog(_ context.Context, accept bool, text string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dialog == nil {
+		return errors.New("no dialog is showing")
+	}
+	p.dialog = nil
+	p.answers = append(p.answers, accept)
+	if p.onAnswer != nil {
+		p.onAnswer(p, accept, text)
+	}
+	return nil
 }
 
 func (p *fakePage) set(d *fakeDoc) { p.doc = d }
@@ -84,6 +114,9 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 	value := func(v any) error { return reply(map[string]any{"result": map[string]any{"value": v}}) }
 	if p.hung && (method == "Runtime.evaluate" || method == "Page.captureScreenshot") {
 		return errors.New("the page does not answer")
+	}
+	if p.dialog != nil {
+		return errDialogOpen
 	}
 	switch method {
 	case "Runtime.evaluate":
