@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -247,4 +249,29 @@ func toStrings(v any) []string {
 		out = append(out, x.(string))
 	}
 	return out
+}
+
+// The package declares the tools the server lists.
+func TestPackageDeclaresTheTools(t *testing.T) {
+	raw, err := os.ReadFile("package.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg struct {
+		MCP struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	var declared []string
+	for _, tl := range pkg.MCP.Tools {
+		declared = append(declared, tl.Name)
+	}
+	if strings.Join(declared, ",") != "browser_open,browser_view,browser_find,browser_act,browser_close" {
+		t.Fatalf("package.json declares %v", declared)
+	}
 }
