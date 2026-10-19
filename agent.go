@@ -61,7 +61,8 @@ var toolFind = map[string]any{
 
 var toolAct = map[string]any{
 	"name": "browser_act",
-	"description": "Do one thing on the run's page, then answer the page once it settled. action: click (element), type (element, text: replaces the field's text), select (element, option), press (key: Enter, Tab, Escape, ArrowDown…), scroll (direction: up or down), back, wait, upload (element, file: a path in your workspace). " +
+	"description": "Do one thing on the run's page, then answer the page once it settled (on the same page, only what changed). action: click (element), type (element, text: replaces the field's text), select (element, option), press (key: Enter, Tab, Escape, ArrowDown…), scroll (direction: up or down), back, wait, upload (element, file: a path in your workspace). " +
+		"then: more actions on the same page, done in order (choose an answer, then Submit; fill a form's fields); it stops where the page changes or one pauses. " +
 		"A click that may not be undone, leaving the run's sites, an upload or a question the page asks pauses at needs_confirmation: repeat the action with confirmed when the person's own message in this turn already asked for it (\"submit all fifteen, don't ask me\"), otherwise ask them first. A sign-in pauses at needs_human: the person does it, then you go on. You never type passwords.",
 	"inputSchema": map[string]any{
 		"type": "object",
@@ -74,18 +75,28 @@ var toolAct = map[string]any{
 			"key":       map[string]any{"type": "string"},
 			"direction": map[string]any{"type": "string", "enum": []string{"up", "down"}},
 			"file":      map[string]any{"type": "string"},
-			"confirmed": map[string]any{"type": "boolean", "description": "Only when the person who asked you said, in their own message in this turn, to do this (\"submit all fifteen, don't ask me\" covers each submit). Without it, ask them first."},
+			"confirmed": map[string]any{"type": "boolean", "description": "Only when the person who asked you said, in their own message in this turn, to do this (\"submit all fifteen, don't ask me\" covers each submit). Without it, ask them first. Covers every action of the call."},
+			"then": map[string]any{"type": "array", "description": "More actions on the same page, each {action, element, text, option, key, direction, file}.", "items": map[string]any{"type": "object", "properties": map[string]any{
+				"action":  map[string]any{"type": "string", "enum": []string{"click", "type", "select", "press", "scroll", "back", "wait", "upload"}},
+				"element": map[string]any{"type": "integer"}, "text": map[string]any{"type": "string"}, "option": map[string]any{"type": "string"},
+				"key": map[string]any{"type": "string"}, "direction": map[string]any{"type": "string", "enum": []string{"up", "down"}}, "file": map[string]any{"type": "string"},
+			}, "required": []string{"action"}}},
 		},
 		"required": []string{"run", "action"},
 	},
 }
 
 var toolClose = map[string]any{
-	"name":        "browser_close",
-	"description": "Close the run's tab (without run: every run of this room you started for the person); its view leaves the room.",
+	"name": "browser_close",
+	"description": "Close the run's tab (without run: every run of this room you started for the person); its view leaves the room. " +
+		"procedure (with run and purpose): also save the run's steps as a skill pack draft the person can save, when they want to do this task again.",
 	"inputSchema": map[string]any{
-		"type":       "object",
-		"properties": map[string]any{"run": map[string]any{"type": "string"}},
+		"type": "object",
+		"properties": map[string]any{
+			"run":       map[string]any{"type": "string"},
+			"procedure": map[string]any{"type": "string", "description": "The procedure's name: lowercase letters, digits and dashes."},
+			"purpose":   map[string]any{"type": "string", "description": "One sentence: what the procedure does."},
+		},
 	},
 }
 
@@ -125,7 +136,7 @@ func (t *tools) open(ctx context.Context, args json.RawMessage) (any, *rpcError)
 	if !contains(r.Sites, site) {
 		r.Sites = append(r.Sites, site)
 	}
-	return t.step(ctx, r, tb, sess, func(*liveFeed, *page) (*checkpoint, string, error) {
+	return t.step(ctx, r, tb, sess, true, func(*liveFeed, *page) (*checkpoint, string, error) {
 		if err := navigate(ctx, tb, in.URL); err != nil {
 			return nil, "", err
 		}
@@ -314,6 +325,9 @@ type actInput struct {
 	Direction string `json:"direction"`
 	File      string `json:"file"`
 	Confirmed bool   `json:"confirmed"`
+	// Then are more actions on the same page, done in order after this
+	// one (their own then is ignored).
+	Then []actInput `json:"then"`
 }
 
 // act does one thing on the run's page.
@@ -357,9 +371,46 @@ func (t *tools) act(ctx context.Context, args json.RawMessage) (any, *rpcError) 
 			}
 		}
 	}
-	return t.step(ctx, r, tb, sess, func(_ *liveFeed, pg *page) (*checkpoint, string, error) {
-		return t.do(ctx, r, tb, sess, pg, in)
+	return t.step(ctx, r, tb, sess, false, func(_ *liveFeed, pg *page) (*checkpoint, string, error) {
+		return t.doAll(ctx, r, tb, sess, pg, in)
 	})
+}
+
+// doAll does the call's action, then each of its then on the same page,
+// read anew before each: it stops at the first that pauses, is refused or
+// fails, or once the page is another (a new address or a new tab), saying
+// how many it did (QA 2026-10-19: a quiz took three model turns a
+// question, choose, submit, continue, each a wait of up to a minute).
+func (t *tools) doAll(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, pg *page, in actInput) (*checkpoint, string, error) {
+	acts := append([]actInput{in}, in.Then...)
+	tabs := len(t.runner.host.tabs(ctx))
+	for i, a := range acts {
+		a.Confirmed, a.Then = in.Confirmed, nil
+		if i > 0 {
+			stop := ""
+			next, err := observe(ctx, tb)
+			switch {
+			case err != nil:
+				stop = "the page could not be read"
+			case !samePage(pg, next):
+				stop = "the page changed to another"
+			case len(t.runner.host.tabs(ctx)) != tabs:
+				stop = "the page opened a tab"
+			}
+			if stop != "" {
+				return nil, fmt.Sprintf("did %d of %d actions; %s, so the rest were not done: read it below", i, len(acts), stop), nil
+			}
+			pg = next
+		}
+		cp, note, err := t.do(ctx, r, tb, sess, pg, a)
+		if cp != nil || note != "" || err != nil {
+			if len(acts) > 1 && note != "" {
+				note = fmt.Sprintf("did %d of %d actions; action %d: %s", i, len(acts), i+1, note)
+			}
+			return cp, note, err
+		}
+	}
+	return nil, "", nil
 }
 
 // do runs one action on pg: a checkpoint when it must wait, a note when it
@@ -506,8 +557,9 @@ func pressKey(name string) component.LiveInput {
 
 // step runs do on the run's page, follows a tab the page opened, lets the
 // page settle and answers what it came to, the run saved: a checkpoint
-// (with the keeper for a sign-in) or the page.
-func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, do func(*liveFeed, *page) (*checkpoint, string, error)) (any, *rpcError) {
+// (with the keeper for a sign-in) or the page: all of it when whole,
+// else what changed when it is the same page (view.go).
+func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, whole bool, do func(*liveFeed, *page) (*checkpoint, string, error)) (any, *rpcError) {
 	live := startLive(t.gw, tb, r.ID)
 	defer func() { live.end() }()
 	// Nobody could answer a dialog the call leaves open (dialog.go).
@@ -581,7 +633,11 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 	if note == "" {
 		note = pageNote(tb)
 	}
-	return t.result(ctx, r, tb, cp, note, false), nil
+	since := pg
+	if whole || cp != nil || pg.URL == "" {
+		since = nil // an opened page, a pause, or one not read before: all of it
+	}
+	return t.resultSince(ctx, r, tb, cp, note, false, since), nil
 }
 
 // openedTab is a tab the run's tab opened during the step (not in before),

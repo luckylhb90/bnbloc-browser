@@ -357,3 +357,42 @@ func pending(d decision, pg *page) *pendingStep {
 func elementOf(a action) *checkpointElement {
 	return &checkpointElement{Label: a.Label, Role: a.Role, Href: a.Href}
 }
+
+// staleAfter is how long the files a run leaves (its locks, its keeper's
+// log and stop file, its frames, a job's keeper file) stay after the run
+// itself is gone: long past any call or keeper still using them.
+const staleAfter = time.Hour
+
+// sweep removes what runs that are gone left behind, untouched for
+// staleAfter. A run that exists keeps everything.
+func (s runStore) sweep(now time.Time) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	alive := map[string]bool{}
+	for _, id := range s.ids() {
+		alive[id] = true
+	}
+	for _, e := range entries {
+		name := e.Name()
+		run := ""
+		switch {
+		case strings.HasPrefix(name, "brun_"):
+			run, _, _ = strings.Cut(name, ".")
+		case strings.HasPrefix(name, "keeper-"):
+			raw, err := os.ReadFile(filepath.Join(s.dir, name))
+			if err != nil {
+				continue
+			}
+			run = strings.TrimSpace(string(raw))
+		default:
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || alive[run] || now.Sub(info.ModTime()) < staleAfter {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(s.dir, name))
+	}
+}

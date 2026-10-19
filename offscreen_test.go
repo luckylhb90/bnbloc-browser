@@ -182,3 +182,35 @@ func TestFitViewportLeavesAFittingPageOnChrome(t *testing.T) {
 		t.Fatalf("viewport %v → %v", before, after)
 	}
 }
+
+// On a real Chrome, two reads of one document are the same page, also
+// after a click changed it; a load of the same address is another.
+func TestSamePageOnChrome(t *testing.T) {
+	c := startTestChrome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<title>q</title><label><input type="radio" name="a">A</label><p id="s"></p>`))
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tb, err := openTab(ctx, c, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := navigate(ctx, tb, srv.URL+"/"); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := observe(ctx, tb)
+	_ = evaluate(ctx, tb, "document.getElementById('s').textContent='picked'", nil)
+	b, _ := observe(ctx, tb)
+	if !samePage(a, b) {
+		t.Fatalf("one document read twice is not the same page: %s vs %s", a.PageKey, b.PageKey)
+	}
+	if err := navigate(ctx, tb, srv.URL+"/"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := observe(ctx, tb); samePage(a, c) {
+		t.Fatal("a new load is the same page")
+	}
+}

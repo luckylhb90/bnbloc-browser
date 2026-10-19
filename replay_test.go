@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // replayOf reads a run's replay page from the workspace: its steps, and
@@ -100,5 +102,71 @@ func TestReplayKeepsNewestFramesWithinBudget(t *testing.T) {
 	steps, _ := replayOf(t, tl.workspace, r.ID)
 	if steps[0].Frame != "" || steps[0].Note == "" || steps[1].Frame == "" || steps[2].Frame == "" {
 		t.Fatalf("frames kept: %v %v %v (%q)", steps[0].Frame != "", steps[1].Frame != "", steps[2].Frame != "", steps[0].Note)
+	}
+}
+
+// The sweep removes what gone runs left, once old; a live run's files and
+// fresh leftovers stay.
+func TestSweepRemovesWhatGoneRunsLeft(t *testing.T) {
+	s := runStore{dir: t.TempDir()}
+	write := func(name, content string) { _ = os.WriteFile(filepath.Join(s.dir, name), []byte(content), 0o600) }
+	_ = s.save(&runState{ID: "brun_alive"})
+	write("brun_alive.json.lock", "")
+	write("brun_gone.json.lock", "")
+	write("brun_gone.json.keep.log", "log")
+	write("keeper-job_1", "brun_gone")
+	write("keeper-job_2", "brun_alive")
+	_ = os.MkdirAll(s.framesDir("brun_gone"), 0o700)
+	write("brun_fresh.json.lock", "")
+	old := time.Now().Add(-2 * time.Hour)
+	for _, n := range []string{"brun_alive.json", "brun_alive.json.lock", "brun_gone.json.lock", "brun_gone.json.keep.log", "keeper-job_1", "keeper-job_2", "brun_gone.frames"} {
+		_ = os.Chtimes(filepath.Join(s.dir, n), old, old)
+	}
+	s.sweep(time.Now())
+	left, _ := os.ReadDir(s.dir)
+	var names []string
+	for _, e := range left {
+		names = append(names, e.Name())
+	}
+	if got := strings.Join(names, ","); got != "brun_alive.json,brun_alive.json.lock,brun_fresh.json.lock,keeper-job_2" {
+		t.Fatalf("left = %s", got)
+	}
+}
+
+// Closing a run with a procedure writes its steps as a skill pack draft
+// (a repeated step once, the sign-in the person's); a bad name keeps the
+// run open.
+func TestCloseSavesAProcedureDraft(t *testing.T) {
+	p, _, _ := expensePortal()
+	h := newHarness(t, p, func(q decReq) (string, string) { return "", "" })
+	h.tools.workspace = t.TempDir()
+	head, _ := h.call("browser_open", map[string]any{"url": "https://portal.example.com/expenses/new"})
+	run := head["run"].(string)
+	h.call("browser_act", map[string]any{"run": run, "action": "type", "element": 1, "text": "120.50"})
+	h.call("browser_act", map[string]any{"run": run, "action": "click", "element": 2})
+	h.call("browser_act", map[string]any{"run": run, "action": "click", "element": 2})
+	raw, _ := json.Marshal(map[string]any{"name": "browser_close", "arguments": map[string]any{"run": run, "procedure": "File Expense", "purpose": "File an expense"}})
+	if _, rerr := h.tools.dispatch(context.Background(), "tools/call", raw); rerr == nil || !strings.Contains(rerr.Message, "lowercase") {
+		t.Fatalf("a bad name = %v", rerr)
+	}
+	if _, err := h.tools.runner.store.load(run); err != nil {
+		t.Fatal("a bad name closed the run")
+	}
+	head, _ = h.call("browser_close", map[string]any{"run": run, "procedure": "file-expense", "purpose": "File an expense: amount and preview"})
+	if head["procedure"] != "drafts/file-expense" {
+		t.Fatalf("close = %v", head)
+	}
+	skill, err := os.ReadFile(filepath.Join(h.tools.workspace, "drafts", "file-expense", "file-expense", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\nname: file-expense\ndescription: \"File an expense: amount and preview\"\n---"
+	if !strings.HasPrefix(string(skill), want) || !strings.Contains(string(skill), "1. Open https://portal.example.com/expenses/new\n2. Type \"120.50\" into \"Amount\"\n3. Click \"Preview\"\n") || strings.Contains(string(skill), "4. ") {
+		t.Fatalf("SKILL.md:\n%s", skill)
+	}
+	var manifest map[string]any
+	raw, _ = os.ReadFile(filepath.Join(h.tools.workspace, "drafts", "file-expense", "component.json"))
+	if json.Unmarshal(raw, &manifest) != nil || manifest["kind"] != "bnbloc.skill.package/v1" {
+		t.Fatalf("component.json:\n%s", raw)
 	}
 }

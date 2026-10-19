@@ -128,24 +128,33 @@ const replayPage = `<!doctype html>
 <title>Browser run replay</title>
 <style>
 body{margin:0;font:14px system-ui,sans-serif;background:#111;color:#eee;display:flex;flex-direction:column;height:100vh}
-header{padding:8px 12px;border-bottom:1px solid #333;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-header .meta{color:#999;flex:1 1 200px}
-button{background:#2a2a2a;color:#eee;border:1px solid #444;border-radius:6px;padding:4px 10px;cursor:pointer}
+header{padding:6px 10px;border-bottom:1px solid #333;display:flex;gap:6px;align-items:center;min-width:0}
+header strong{white-space:nowrap}
+header .meta{color:#999;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button{background:#2a2a2a;color:#eee;border:1px solid #444;border-radius:6px;padding:4px 10px;cursor:pointer;flex-shrink:0}
+#steps{display:none}
 main{flex:1;display:flex;min-height:0}
 #stage{flex:1;display:flex;flex-direction:column;min-width:0}
 #shot{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000}
 #shot img{max-width:100%;max-height:100%;object-fit:contain}
 #shot .none{color:#888;padding:24px;text-align:center}
-#caption{padding:8px 12px;border-top:1px solid #333}
-#caption .url{color:#888;font-size:12px;word-break:break-all}
+#caption{padding:6px 10px;border-top:1px solid #333}
+#what{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#caption .url{color:#888;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 ol{margin:0;padding:0;list-style:none;width:280px;overflow:auto;border-left:1px solid #333}
-li{padding:6px 10px;border-bottom:1px solid #222;cursor:pointer}
+li{padding:6px 10px;border-bottom:1px solid #222;cursor:pointer;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 li.on{background:#1d3a5a}
 li .at{color:#888;font-size:12px;margin-right:6px}
-@media (max-width:640px){main{flex-direction:column}ol{width:auto;max-height:35vh;border-left:0;border-top:1px solid #333}}
+@media (max-width:720px){
+  header strong{display:none}
+  #steps{display:inline-block}
+  main{flex-direction:column}
+  ol{display:none;width:auto;max-height:40vh;border-left:0;border-top:1px solid #333}
+  body.list ol{display:block}
+}
 </style></head><body>
 <header><strong>Browser run replay</strong><span class="meta" id="meta"></span>
-<button id="prev">&#9664;</button><button id="play">Play</button><button id="next">&#9654;</button></header>
+<button id="steps">Steps</button><button id="prev">&#9664;</button><button id="play">Play</button><button id="next">&#9654;</button></header>
 <main><div id="stage"><div id="shot"></div><div id="caption"><div id="what"></div><div class="url" id="url"></div></div></div><ol id="list"></ol></main>
 <script id="data" type="application/json">{{DATA}}</script>
 <script>
@@ -164,6 +173,7 @@ function stop(){clearInterval(timer);timer=null;$('play').textContent='Play'}
 $('prev').onclick=()=>{stop();show(at-1)};$('next').onclick=()=>{stop();show(at+1)};
 $('play').onclick=()=>{if(timer){stop();return}if(at>=steps.length-1)show(0);$('play').textContent='Pause';
   timer=setInterval(()=>{if(at>=steps.length-1){stop();return}show(at+1)},1500)};
+$('steps').onclick=()=>document.body.classList.toggle('list');
 addEventListener('keydown',e=>{if(e.key==='ArrowLeft')$('prev').click();if(e.key==='ArrowRight')$('next').click()});
 show(at);
 </script></body></html>

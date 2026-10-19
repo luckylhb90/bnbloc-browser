@@ -70,11 +70,15 @@ func (t *tools) waitingSignIn(ctx context.Context, site string, sess component.R
 // stop ends run id, or ("" ) every run of the requester in the session's
 // room: its keeper ends its view in the room, its tab closes, and the run
 // is forgotten. A run another call drives is left (reported busy).
-func (t *tools) stop(ctx context.Context, id string) (any, *rpcError) {
+func (t *tools) stop(ctx context.Context, id, procedure, purpose string) (any, *rpcError) {
 	sess, err := t.gw.session(ctx)
 	if err != nil {
 		return nil, toolFailure(err)
 	}
+	if procedure != "" && id == "" {
+		return nil, &rpcError{Code: -32602, Message: "procedure: name the run to save"}
+	}
+	draft := ""
 	ids := []string{id}
 	if id == "" {
 		ids = t.runner.store.ids()
@@ -97,6 +101,13 @@ func (t *tools) stop(ctx context.Context, id string) (any, *rpcError) {
 			busy = append(busy, rid)
 			continue
 		}
+		if procedure != "" {
+			// Saved before the run goes: a wrong name leaves it open.
+			if draft, err = t.writeProcedure(r, procedure, purpose); err != nil {
+				unlock()
+				return nil, &rpcError{Code: -32602, Message: err.Error()}
+			}
+		}
 		t.runner.store.stopKeeper(r.ID)
 		if err := t.runner.host.close(ctx, r.Tab); err != nil && !errors.Is(err, errTabGone) {
 			unlock()
@@ -107,6 +118,10 @@ func (t *tools) stop(ctx context.Context, id string) (any, *rpcError) {
 		stopped = append(stopped, r.ID)
 	}
 	head := map[string]any{"stopped": stopped, "note": "their tabs are closed and their views gone from the room"}
+	if draft != "" {
+		head["procedure"] = draft
+		head["note"] = head["note"].(string) + "; the steps are a skill pack draft in " + draft + ": tell the person they can save it from the turn's files (Save as skill pack)"
+	}
 	if len(busy) > 0 {
 		head["busy"] = busy
 		head["note"] = "busy runs are in another call and were not stopped; " + head["note"].(string)
@@ -160,6 +175,12 @@ func (t *tools) lockRun(id string) (func(), *runState, *rpcError) {
 // (withShot) adds a screenshot: an image costs the agent far more than
 // the text, which usually says enough.
 func (t *tools) result(ctx context.Context, r *runState, tb tabHandle, cp *checkpoint, note string, withShot bool) any {
+	return t.resultSince(ctx, r, tb, cp, note, withShot, nil)
+}
+
+// resultSince is result answering only what changed since the page was
+// since, when it is the same page and the change is small (view.go).
+func (t *tools) resultSince(ctx context.Context, r *runState, tb tabHandle, cp *checkpoint, note string, withShot bool, since *page) any {
 	var img string
 	var pg *page
 	if tb != nil {
@@ -168,12 +189,14 @@ func (t *tools) result(ctx context.Context, r *runState, tb tabHandle, cp *check
 			img, _ = screenshot(ctx, tb)
 		}
 	}
-	return checkpointResult(r, cp, &pageView{page: pg, shot: img}, note)
+	return checkpointResult(r, cp, &pageView{page: pg, shot: img, since: since}, note)
 }
 
 type pageView struct {
 	page *page
 	shot string
+	// since is the page before the call's actions (nil: answer it whole).
+	since *page
 }
 
 // checkpointResult is a tool result: the checkpoint (ours), the page
@@ -214,7 +237,13 @@ func checkpointResult(r *runState, cp *checkpoint, pv *pageView, note string) an
 		site.WriteString("\n\n")
 	}
 	content := []any{}
-	if pv != nil && pv.page != nil {
+	changes, small := pageChanges{}, false
+	if pv != nil && pv.page != nil && samePage(pv.since, pv.page) {
+		changes, small = changesOf(pv.since, pv.page)
+	}
+	if small {
+		writeChanges(&site, pv.page, changes)
+	} else if pv != nil && pv.page != nil {
 		site.WriteString("Page: " + pv.page.Title + "\n" + pv.page.URL + "\n\n" + pv.page.Text)
 		if ctrls := controlsOf(pv.page); len(ctrls) > 0 {
 			site.WriteString("\n\nControls (act on one by its number):\n")

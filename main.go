@@ -84,6 +84,7 @@ func main() {
 		}
 		return
 	}
+	go store.sweep(time.Now())
 	cwd, _ := os.Getwd()
 	t := &tools{gw: gw, runner: &runner{model: *model, dec: gw, host: newLocalHost(cfg), store: store,
 		downloads: filepath.Join(cwd, "downloads"), budget: *budget, now: time.Now}, workspace: cwd}
@@ -160,12 +161,14 @@ func (t *tools) dispatch(ctx context.Context, method string, params json.RawMess
 			return t.act(ctx, p.Arguments)
 		case "browser_close":
 			var in struct {
-				Run string `json:"run"`
+				Run       string `json:"run"`
+				Procedure string `json:"procedure"`
+				Purpose   string `json:"purpose"`
 			}
 			if err := json.Unmarshal(p.Arguments, &in); err != nil {
 				return nil, invalidArgs(err)
 			}
-			return t.stop(ctx, strings.TrimSpace(in.Run))
+			return t.stop(ctx, strings.TrimSpace(in.Run), in.Procedure, in.Purpose)
 		default:
 			return nil, &rpcError{Code: -32602, Message: "unknown tool: " + p.Name}
 		}
