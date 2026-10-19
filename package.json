@@ -2,7 +2,7 @@
   "kind": "bnbloc.mcp.package/v1",
   "contract": "bnbloc.mcp.contract/v1",
   "name": "browser",
-  "version": "0.4.12",
+  "version": "0.5.0",
   "publisher": "bnbloc",
   "description": "Operate web pages in a dedicated, visible Chrome profile on the member's machine: the agent states a goal, the component works the page step by step and pauses for confirmation before anything irreversible, for values only a person can give, and before leaving the site. Nothing to configure: the room is the credential (each call acts as the person the agent is answering, in their own browser).",
   "runtime": "stdio",

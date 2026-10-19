@@ -19,14 +19,12 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-// A run: one goal worked on in its own tab until a checkpoint (§2.4 of
-// bnbloc docs/prd/2026-10-17-browser-component.md). The loop is a port of
-// jev-ultrafast's agent.py (NOTICE): observe, decide (one SystemOne call:
-// the operation and every operation's target), execute, observe again.
-// Instead of the demo's exceptions every pause is a checkpoint the agent
-// resumes with browse(run). A run never ends for time or a step count:
-// it stops when the page stops changing (no progress) and waits at a
-// checkpoint for as long as nobody answers.
+// A run: the requester's tab in a room, which the agent drives one action
+// at a time (agent.go; §2.3 of bnbloc
+// docs/prd/2026-10-17-browser-component.md). A run waits at a checkpoint
+// (§2.4) when a step must not go on without someone: a sign-in, a
+// confirmation, a page's question, a download. It never ends for time; it
+// lives as long as its tab.
 
 // Checkpoints (§2.4).
 const (
@@ -41,47 +39,6 @@ const (
 	cpRunning           = "running"
 )
 
-// stallSteps is how many executed steps in a row may leave the page
-// unchanged (a WAIT excepted) before the run is blocked: progress, never
-// time, decides (jev_ultrafast/agent.py:153-158).
-const stallSteps = 3
-
-// repeatSteps of the last repeatWindow executed steps doing the same
-// operation on the same element, and coming back to a page they were on,
-// are a loop however the page changed in between (QA 2026-10-19: a comment
-// box opened and closed by clicks on it, which stall detection never saw).
-// The same step that leads somewhere new each time (Next, Load more) is
-// progress.
-const (
-	repeatSteps  = 3
-	repeatWindow = 4
-)
-
-// repeating answers the last executed step when it repeats a loop's worth
-// (repeatSteps of the last repeatWindow); a WAIT never does.
-func (r *runState) repeating() (historyRecord, bool) {
-	if len(r.History) < repeatSteps {
-		return historyRecord{}, false
-	}
-	last := r.History[len(r.History)-1]
-	if last.Kind == "wait" {
-		return historyRecord{}, false
-	}
-	n, revisited := 0, false
-	seen := map[string]bool{}
-	for _, h := range r.History[max(0, len(r.History)-repeatWindow):] {
-		if h.Operation != last.Operation || h.Action != last.Action {
-			continue
-		}
-		n++
-		if h.After != "" {
-			revisited = revisited || seen[h.After]
-			seen[h.After] = true
-		}
-	}
-	return last, n >= repeatSteps && revisited
-}
-
 // runState is one run, kept in the state directory by run id.
 type runState struct {
 	ID        string `json:"id"`
@@ -93,8 +50,6 @@ type runState struct {
 	// Sites are the registrable domains the run may act on (§2.4
 	// leaving_site): the start URL's, plus each a requester allowed.
 	Sites []string `json:"sites"`
-	// Values maps field descriptions to the text the agent supplied.
-	Values map[string]string `json:"values,omitempty"`
 	// Threshold is the irreversibility predicate's pause threshold (§2.5).
 	Threshold float64 `json:"threshold"`
 	// Checkpoint is where the run waits ("" while it runs).
@@ -108,15 +63,13 @@ type runState struct {
 	// PausedURL is the page the run paused on.
 	PausedURL string `json:"pausedUrl,omitempty"`
 	// AcceptDialog is the page's question the person agreed to (a
-	// confirmed resume of a dialog's checkpoint): the run accepts the next
+	// confirmed repeat of the action a dialog's checkpoint held): the run accepts the next
 	// dialog asking it, with DialogText for a prompt.
 	AcceptDialog string          `json:"acceptDialog,omitempty"`
 	DialogText   string          `json:"dialogText,omitempty"`
 	History      []historyRecord `json:"history"`
-	// Unchanged counts consecutive executed steps that changed nothing.
-	Unchanged   int   `json:"unchanged"`
-	Decisions   int   `json:"decisions"`
-	StartedAtMs int64 `json:"startedAtMs"`
+	Decisions    int             `json:"decisions"`
+	StartedAtMs  int64           `json:"startedAtMs"`
 }
 
 // historyRecord is one executed step.
@@ -130,9 +83,6 @@ type historyRecord struct {
 	PageChanged *bool   `json:"pageChanged,omitempty"`
 	Confidence  float64 `json:"confidence"`
 	AtMs        int64   `json:"atMs"`
-	// After is the page's fingerprint after the step ("" unknown): a loop
-	// comes back to a page it was on.
-	After string `json:"after,omitempty"`
 }
 
 // checkpoint is a pause: what it is, what it is about, and what the agent
@@ -275,16 +225,6 @@ type runner struct {
 	// `running` (the agent CLI's tool-call timeout, §7 finding 1).
 	budget time.Duration
 	now    func() time.Time
-	// held answers who holds control of the call's browser from the room
-	// ("" nobody; nil outside a call with a live view).
-	held func() string
-}
-
-func (rn *runner) holder() string {
-	if rn.held == nil {
-		return ""
-	}
-	return rn.held()
 }
 
 // sleepCtx waits d or until ctx ends.
@@ -299,94 +239,6 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // errDecisionsOff: the deployment or organization has no decision model.
 var errDecisionsOff = errors.New("decisions are off here: the deployment has no decision model, or the organization turned AI off")
-
-// loop works the run from its current page until a checkpoint, the
-// budget, or the context's end. p is the run's tab.
-func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkpoint, error) {
-	deadline := rn.now().Add(rn.budget)
-	reloaded := false
-	for {
-		if rn.now().After(deadline) {
-			if who := rn.holder(); who != "" {
-				return &checkpoint{Kind: cpRunning, Reason: who + " is driving the browser from the room; resume the run to keep going once they hand it back"}, nil
-			}
-			return &checkpoint{Kind: cpRunning, Reason: "still working; resume the run to keep going"}, nil
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if who := rn.holder(); who != "" {
-			// A person drives the browser from the room (§2.8): the run
-			// takes no step until they hand control back.
-			if err := sleepCtx(ctx, time.Second); err != nil {
-				return nil, err
-			}
-			r.Unchanged = 0
-			continue
-		}
-		if dl := rn.collectDownloads(r); dl != nil {
-			return dl, nil
-		}
-		if crashedOf(p) {
-			// The page crashed in the browser (crash.go): reloaded once;
-			// a page that crashes again stops the run with that reason.
-			if reloaded {
-				return &checkpoint{Kind: cpBlocked, Reason: "the page keeps crashing in the browser; the person can open it in the browser window on their computer, then resume the run"}, nil
-			}
-			reloaded = true
-			if err := p.(crashPage).reload(ctx); err != nil {
-				return nil, err
-			}
-			if err := sleepCtx(ctx, time.Second); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if d := dialogOf(p); d != nil {
-			if cp := rn.answerDialog(ctx, r, p, d); cp != nil {
-				return cp, nil
-			}
-			continue
-		}
-		pg, err := observe(ctx, p)
-		if errors.Is(err, errDialogOpen) || errors.Is(err, errTabCrashed) {
-			continue // answered above, next time round
-		}
-		if err != nil {
-			return nil, err
-		}
-		if posted, err := autoPost(ctx, p, pg); err != nil {
-			return nil, err
-		} else if posted {
-			continue // the page's own hand-off went on: observe where it led
-		}
-		if !r.onSite(pg.URL) && signInPage(pg) {
-			// A redirect to a sign-in elsewhere (an identity provider):
-			// the person signs in, and the redirect brings the run back.
-			return waitForPerson(nil, waitSignIn), nil
-		}
-		if !r.onSite(pg.URL) {
-			return &checkpoint{Kind: cpLeavingSite, Site: siteOf(pg.URL), Reason: "the page is now on " + siteOf(pg.URL) + ", outside the run's sites; ask the person who asked you whether to continue there"}, nil
-		}
-		cp, err := rn.step(ctx, r, p, pg)
-		if err != nil {
-			if errors.Is(err, errStale) || errors.Is(err, errDialogOpen) {
-				continue // the page moved, or asks something: look again, act on nothing stale
-			}
-			return nil, err
-		}
-		if cp != nil {
-			return cp, nil
-		}
-		if r.Unchanged >= stallSteps {
-			return &checkpoint{Kind: cpBlocked, Reason: fmt.Sprintf("the last %d steps changed nothing on the page; read the page below and resume with a new instruction", stallSteps)}, nil
-		}
-		if last, ok := r.repeating(); ok {
-			return &checkpoint{Kind: cpBlocked, Element: &checkpointElement{Label: last.Action},
-				Reason: fmt.Sprintf("the run did the same operation on the same element %d times in its last %d steps without getting further (the page can change and change back); read the page below and resume with a new instruction", repeatSteps, repeatWindow)}, nil
-		}
-	}
-}
 
 // answerDialog is the run's answer to the page's dialog while it works
 // (dialog.go): an alert is accepted and recorded in the history; a dialog
@@ -412,9 +264,9 @@ func (rn *runner) answerDialog(ctx context.Context, r *runState, p browserPage, 
 	}
 	_ = dp.answerDialog(ctx, false, "")
 	if d.Kind == component.LiveDialogPrompt {
-		return &checkpoint{Kind: cpNeedsInput, Dialog: question, Reason: "the page asked for text before going on (its question is shown below); ask the person who asked you, then resume with value"}
+		return &checkpoint{Kind: cpNeedsInput, Dialog: question, Reason: "the page asks for text before going on (its question is shown below); ask the person who asked you, then repeat the action with confirmed and their text"}
 	}
-	return &checkpoint{Kind: cpNeedsConfirmation, Dialog: question, Reason: "the page asked a question before going on (shown below); it was answered no for now. Ask the person who asked you, and resume with confirmed once they answer in the room"}
+	return &checkpoint{Kind: cpNeedsConfirmation, Dialog: question, Reason: "the page asked a question before going on (shown below); it was answered no for now. Ask the person who asked you, and repeat the action with confirmed in the turn their answer opens"}
 }
 
 // dialogQuestion is what a dialog asks (a leave-page dialog has no text of
@@ -424,54 +276,6 @@ func dialogQuestion(d *component.LiveDialog) string {
 		return "Leave this page? Changes may not be saved."
 	}
 	return d.Message
-}
-
-// step decides one step on pg and runs it, or answers the checkpoint it
-// reaches.
-func (rn *runner) step(ctx context.Context, r *runState, p browserPage, pg *page) (*checkpoint, error) {
-	body, operations, targets, controls := stepRequest(rn.model, pg, r.goalText(), r.recent())
-	raw, err := rn.dec.systemOne(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	r.Decisions++
-	d, err := readDecision(raw, operations, targets, controls)
-	if err != nil {
-		return nil, err
-	}
-	switch d.Operation {
-	case opDone:
-		if ok, err := fresh(ctx, p, pg, nil); err != nil || !ok {
-			return nil, errStale
-		}
-		return &checkpoint{Kind: cpDone, Reason: "the decision model judged the goal visibly met; check the page and fields below before you report it"}, nil
-	case opBlocked:
-		return &checkpoint{Kind: cpBlocked, Reason: "the decision model found no operation that makes progress here; read the page below and resume with a new instruction"}, nil
-	case opUpload:
-		return &checkpoint{Kind: cpUpload, Element: elementOf(d.Action), Reason: "the page asks for a file; uploading sends a room file to this site, so the person who asked you chooses it and agrees first", Pending: pending(d, pg)}, nil
-	case opSecret:
-		return waitForPerson(elementOf(d.Action), waitSecret), nil
-	case opNeedsHuman:
-		return waitForPerson(nil, waitSignIn), nil
-	case opTypeText:
-		text, ok := r.valueFor(d.Action)
-		if !ok {
-			return &checkpoint{Kind: cpNeedsInput, Element: elementOf(d.Action), Reason: "the next step types into this field and no value was given for it; resume with the text to type", Pending: pending(d, pg)}, nil
-		}
-		return nil, rn.execute(ctx, r, p, pg, d, text)
-	case opClick:
-		if d.Action.Href != "" && !r.onSite(d.Action.Href) {
-			return &checkpoint{Kind: cpLeavingSite, Element: elementOf(d.Action), Site: siteOf(d.Action.Href), Reason: "the next click leads to " + siteOf(d.Action.Href) + ", outside the run's sites; ask the person who asked you whether to go there", Pending: pending(d, pg)}, nil
-		}
-		prob, err := rn.irreversible(ctx, r, p, d.Action)
-		if err != nil {
-			return nil, err
-		}
-		if prob >= r.Threshold {
-			return &checkpoint{Kind: cpNeedsConfirmation, Element: elementOf(d.Action), Probability: prob, Reason: "the next click may commit something that cannot be undone; ask the person who asked you, and resume only after they answer in the room", Pending: pending(d, pg)}, nil
-		}
-	}
-	return nil, rn.execute(ctx, r, p, pg, d, "")
 }
 
 // irreversible asks the §2.5 predicate about a chosen click, with its
@@ -509,44 +313,6 @@ func (r *runState) guardScope(ctx context.Context, p browserPage, node int) (str
 	return scope, true
 }
 
-// execute runs a decided step and records it.
-func (rn *runner) execute(ctx context.Context, r *runState, p browserPage, pg *page, d decision, text string) error {
-	if err := act(ctx, p, pg, d.Action, text); err != nil {
-		if errors.Is(err, errUnconfirmed) {
-			r.Unchanged = stallSteps // stop: a native select may have fired; never retried blindly
-		}
-		return err
-	}
-	rec := historyRecord{Step: len(r.History) + 1, Operation: d.Operation, Action: d.Action.Label, Kind: d.Action.Kind, Text: text, URL: pg.URL, Confidence: d.Confidence, AtMs: rn.now().UnixMilli()}
-	after, err := observe(ctx, p)
-	if err == nil {
-		rec.After = after.Fingerprint
-		changed := after.Fingerprint != pg.Fingerprint
-		rec.PageChanged = &changed
-		switch {
-		case changed:
-			r.Unchanged = 0
-		case d.Action.Kind != "wait":
-			r.Unchanged++
-		}
-	}
-	r.History = append(r.History, rec)
-	return nil
-}
-
-// resumePending runs the step a checkpoint held, if the page it was
-// decided on is still the page.
-func (rn *runner) resumePending(ctx context.Context, r *runState, p browserPage, ps *pendingStep, text string) error {
-	pg, err := observe(ctx, p)
-	if err != nil {
-		return err
-	}
-	if pg.Fingerprint != ps.Fingerprint {
-		return errStale // decided on another page: the loop decides again
-	}
-	return rn.execute(ctx, r, p, pg, decision{Operation: ps.Operation, Action: ps.Action, Confidence: ps.Confidence}, text)
-}
-
 // What a needs_human pause asks of the person (checkpoint.Waiting).
 const (
 	waitSecret = "Type the password in the page, then let the agent continue"
@@ -557,7 +323,7 @@ const (
 // view in the room (or the browser window), and the run waits for them.
 func waitForPerson(el *checkpointElement, waiting string) *checkpoint {
 	return &checkpoint{Kind: cpNeedsHuman, Element: el, Waiting: waiting,
-		Reason: "only the person can do this step (a sign-in, a password, a second factor); it never passes through you or the model. They do it in the live view in the room, which stays open for them; resume the run with reply once they say they are done"}
+		Reason: "only the person can do this step (a sign-in, a password, a second factor); it never passes through you or the model. They do it in the live view in the room, which stays open for them; once they say they are done, go on with browser_view"}
 }
 
 // signInPage reports a page that asks someone to sign in: a secret field,
@@ -588,49 +354,4 @@ func pending(d decision, pg *page) *pendingStep {
 
 func elementOf(a action) *checkpointElement {
 	return &checkpointElement{Label: a.Label, Role: a.Role, Href: a.Href}
-}
-
-// goalText is the goal with the agent's supplied values named (never a
-// selector: descriptions and text).
-func (r *runState) goalText() string {
-	if len(r.Values) == 0 {
-		return r.Goal
-	}
-	var b strings.Builder
-	b.WriteString(r.Goal)
-	b.WriteString("\n\nValues to use:")
-	for _, k := range sortedValueKeys(r.Values) {
-		b.WriteString("\n- " + k + ": " + r.Values[k])
-	}
-	return b.String()
-}
-
-// valueFor finds the supplied text for a field: a value whose description
-// matches the field's label (case-insensitive, either containing the
-// other), or the only value when exactly one was given and one field is
-// asked.
-func (r *runState) valueFor(a action) (string, bool) {
-	label := strings.ToLower(strings.TrimSpace(a.Label))
-	for _, k := range sortedValueKeys(r.Values) {
-		desc := strings.ToLower(strings.TrimSpace(k))
-		if desc != "" && label != "" && (strings.Contains(label, desc) || strings.Contains(desc, label)) {
-			return r.Values[k], true
-		}
-	}
-	return "", false
-}
-
-func sortedValueKeys(m map[string]string) []string {
-	out := keysOf(m)
-	sortStrings(out)
-	return out
-}
-
-// recent is the history the decision sees.
-func (r *runState) recent() []historyEntry {
-	out := make([]historyEntry, 0, len(r.History))
-	for _, h := range r.History {
-		out = append(out, historyEntry{Action: h.Action, Kind: h.Kind, Text: h.Text, PageChanged: h.PageChanged})
-	}
-	return out
 }

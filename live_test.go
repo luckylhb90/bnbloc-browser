@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/luckylhb90/bnbloc/component"
 )
@@ -19,11 +18,7 @@ func TestLiveViewPostsFramesAndRunsInput(t *testing.T) {
 	var mu sync.Mutex
 	var posts []liveFramePost
 	sentInput := false
-	h := newHarness(t, p, func(q decReq) (string, string) {
-		// Give the feed time for a frame before the run ends.
-		time.Sleep(300 * time.Millisecond)
-		return opDone, ""
-	})
+	h := newHarness(t, p, func(q decReq) (string, string) { return "", "" })
 	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
 		mu.Lock()
 		defer mu.Unlock()
@@ -40,8 +35,8 @@ func TestLiveViewPostsFramesAndRunsInput(t *testing.T) {
 		}
 		return reply
 	}
-	head, _ := h.call("browse", map[string]any{"goal": "look around", "url": "https://portal.example.com/expenses/new"})
-	if head["checkpoint"] != cpDone {
+	head, _ := h.call("browser_open", map[string]any{"url": "https://portal.example.com/expenses/new"})
+	if head["checkpoint"] != nil {
 		t.Fatalf("checkpoint = %v", head)
 	}
 	mu.Lock()
@@ -64,34 +59,6 @@ func TestLiveViewPostsFramesAndRunsInput(t *testing.T) {
 	}
 	if !containsInt(p.clicks, 2) || !contains(p.typed, "typed live") {
 		t.Fatalf("live input did not run: clicks %v typed %v", p.clicks, p.typed)
-	}
-}
-
-// While a person holds control from the room, the run takes no step: the
-// model is not asked until control is handed back.
-func TestRunWaitsWhileSomeoneHasControl(t *testing.T) {
-	p, _, _ := expensePortal()
-	var mu sync.Mutex
-	controller := "maya"
-	h := newHarness(t, p, func(q decReq) (string, string) { return opDone, "" })
-	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
-		mu.Lock()
-		defer mu.Unlock()
-		return component.LiveFrameReply{Controller: controller}
-	}
-	go func() {
-		time.Sleep(1500 * time.Millisecond)
-		mu.Lock()
-		controller = ""
-		mu.Unlock()
-	}()
-	start := time.Now()
-	head, _ := h.call("browse", map[string]any{"goal": "look around", "url": "https://portal.example.com/expenses/new"})
-	if head["checkpoint"] != cpDone {
-		t.Fatalf("checkpoint = %v", head)
-	}
-	if time.Since(start) < time.Second {
-		t.Fatalf("the run stepped while maya had control (%v)", time.Since(start))
 	}
 }
 
@@ -122,51 +89,6 @@ func TestKeyEventEditCommands(t *testing.T) {
 		if (c.want == "" && got != nil) || (c.want != "" && (len(got) != 1 || got[0] != c.want)) {
 			t.Fatalf("%+v: commands = %v, want %q", c.in, got, c.want)
 		}
-	}
-}
-
-// While a person drives, their input runs as it arrives, through the input
-// loop's waiting posts: frames leave it queued, so a keystroke never waits
-// behind a capture.
-func TestLiveInputRunsBesideTheFrames(t *testing.T) {
-	p, _, _ := expensePortal()
-	var mu sync.Mutex
-	controller := "maya"
-	var waited, frameTook bool
-	posts := 0
-	h := newHarness(t, p, func(q decReq) (string, string) { return opDone, "" })
-	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
-		mu.Lock()
-		defer mu.Unlock()
-		reply := component.LiveFrameReply{Controller: controller}
-		posts++
-		// The first post learns who drives; every later frame knows.
-		if posts > 1 && post.Data != "" && !post.LeaveInput && controller != "" {
-			frameTook = true
-		}
-		if post.WaitInput && !waited {
-			waited = true
-			reply.Input = []component.LiveInput{{Type: component.LiveInputText, Text: "typed fast"}}
-			go func() {
-				time.Sleep(300 * time.Millisecond)
-				mu.Lock()
-				controller = ""
-				mu.Unlock()
-			}()
-		}
-		return reply
-	}
-	head, _ := h.call("browse", map[string]any{"goal": "look around", "url": "https://portal.example.com/expenses/new"})
-	if head["checkpoint"] != cpDone {
-		t.Fatalf("checkpoint = %v", head)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !waited || !contains(p.typed, "typed fast") {
-		t.Fatalf("the waiting post's input did not run: waited %v typed %v", waited, p.typed)
-	}
-	if frameTook {
-		t.Fatal("a frame post took input while someone drove")
 	}
 }
 

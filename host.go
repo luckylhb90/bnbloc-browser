@@ -211,6 +211,8 @@ type browserHost interface {
 	// that let go of it, keep.go).
 	url(ctx context.Context, id string) (string, error)
 	forward(ctx context.Context, id string) error
+	// tabs are the browser's tabs, each with the tab that opened it ("" none).
+	tabs(ctx context.Context) map[string]string
 	// finishedDownloads moves the run's finished downloads into dir and
 	// answers their dir-relative names.
 	finishedDownloads(tabID, dir string) []string
@@ -280,6 +282,31 @@ func (h *localHost) url(ctx context.Context, targetID string) (string, error) {
 		return "", err
 	}
 	return out.TargetInfo.URL, nil
+}
+
+// tabs lists the browser's tabs with their openers, from the browser.
+func (h *localHost) tabs(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	c, err := h.connect(ctx)
+	if err != nil {
+		return out
+	}
+	var targets struct {
+		TargetInfos []struct {
+			TargetID string `json:"targetId"`
+			Type     string `json:"type"`
+			OpenerID string `json:"openerId"`
+		} `json:"targetInfos"`
+	}
+	if c.call(ctx, "", "Target.getTargets", nil, &targets) != nil {
+		return out
+	}
+	for _, t := range targets.TargetInfos {
+		if t.Type == "page" {
+			out[t.TargetID] = t.OpenerID
+		}
+	}
+	return out
 }
 
 // forward brings a tab's window to the front and selects the tab, from the

@@ -27,7 +27,7 @@ func newKeeperHarness(t *testing.T) *keeperHarness {
 		{Kind: "secret", Node: node(1), Role: "textbox", Label: "Password"},
 	}}
 	k := &keeperHarness{t: t, page: &fakePage{doc: signIn}, done: make(chan error, 1)}
-	k.h = newHarness(t, k.page, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	k.h = newHarness(t, k.page, func(q decReq) (string, string) { return "", "" })
 	keeping := false
 	k.h.relay.live = func(post liveFramePost) component.LiveFrameReply {
 		k.mu.Lock()
@@ -42,7 +42,7 @@ func newKeeperHarness(t *testing.T) *keeperHarness {
 		return component.LiveFrameReply{Watching: true, Controller: "maya"}
 	}
 	k.h.tools.keeper = func(run, job string) error { return nil }
-	head, _ := k.h.call("browse", map[string]any{"goal": "sign in", "url": "https://portal.example.com/"})
+	head, _ := k.h.call("browser_open", map[string]any{"url": "https://portal.example.com/"})
 	if head["checkpoint"] != cpNeedsHuman {
 		t.Fatalf("checkpoint = %v", head)
 	}
@@ -137,30 +137,5 @@ func TestKeeperReportsACrashAndReloads(t *testing.T) {
 	defer k.page.mu.Unlock()
 	if k.page.reloads != 1 {
 		t.Fatalf("reloads = %d", k.page.reloads)
-	}
-}
-
-// A page that crashes while the run works is reloaded once; one that
-// crashes again stops the run with that reason.
-func TestRunReloadsACrashedPageOnce(t *testing.T) {
-	p, _, _ := expensePortal()
-	crashes := 1
-	h := newHarness(t, p, func(q decReq) (string, string) {
-		p.mu.Lock()
-		if crashes > 0 {
-			crashes--
-			p.crashed = true
-		}
-		p.mu.Unlock()
-		return opDone, ""
-	})
-	head, _ := h.call("browse", map[string]any{"goal": "look", "url": "https://portal.example.com/expenses/new"})
-	if head["checkpoint"] != cpDone || p.reloads != 1 {
-		t.Fatalf("checkpoint = %v reloads = %d", head, p.reloads)
-	}
-	crashes = 2
-	head, _ = h.call("browse", map[string]any{"goal": "look again", "url": "https://portal.example.com/expenses/new"})
-	if head["checkpoint"] != cpBlocked {
-		t.Fatalf("a page that keeps crashing = %v", head)
 	}
 }

@@ -137,7 +137,7 @@ func (t *tools) dispatch(ctx context.Context, method string, params json.RawMess
 	case "notifications/initialized", "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		return map[string]any{"tools": []any{toolBrowse, toolLook}}, nil
+		return map[string]any{"tools": []any{toolOpen, toolView, toolFind, toolAct, toolClose}}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -150,10 +150,22 @@ func (t *tools) dispatch(ctx context.Context, method string, params json.RawMess
 			p.Arguments = json.RawMessage(`{}`)
 		}
 		switch p.Name {
-		case "browse":
-			return t.browse(ctx, p.Arguments)
-		case "browser_look":
-			return t.look(ctx, p.Arguments)
+		case "browser_open":
+			return t.open(ctx, p.Arguments)
+		case "browser_view":
+			return t.view(ctx, p.Arguments)
+		case "browser_find":
+			return t.find(ctx, p.Arguments)
+		case "browser_act":
+			return t.act(ctx, p.Arguments)
+		case "browser_close":
+			var in struct {
+				Run string `json:"run"`
+			}
+			if err := json.Unmarshal(p.Arguments, &in); err != nil {
+				return nil, invalidArgs(err)
+			}
+			return t.stop(ctx, strings.TrimSpace(in.Run))
 		default:
 			return nil, &rpcError{Code: -32602, Message: "unknown tool: " + p.Name}
 		}

@@ -76,6 +76,9 @@ type fakePage struct {
 	crashed bool
 	reloads int
 	calls   int
+	// onNavigate runs on Page.navigate; keys records the keys pressed.
+	onNavigate func(p *fakePage, url string)
+	keys       []string
 }
 
 func (p *fakePage) isCrashed() bool {
@@ -210,6 +213,9 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 		}
 		return nil
 	case "Input.dispatchKeyEvent":
+		if k, _ := m["key"].(string); k != "" && m["type"] != "keyUp" {
+			p.keys = append(p.keys, k)
+		}
 		return nil
 	case "Input.insertText":
 		text, _ := m["text"].(string)
@@ -224,6 +230,10 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 		}
 		return nil
 	case "Page.navigate":
+		if p.onNavigate != nil {
+			u, _ := m["url"].(string)
+			p.onNavigate(p, u)
+		}
 		return nil
 	case "Page.captureScreenshot":
 		// The picture follows the page: a new document, a new frame.
@@ -269,8 +279,10 @@ type fakeHost struct {
 	pages  map[string]*fakePage
 	next   *fakePage // the page the next opened tab shows
 	opened int
-	// forwarded are the tabs whose window was brought forward.
+	// forwarded are the tabs whose window was brought forward; openers the
+	// tab that opened each tab (a page's new window).
 	forwarded []string
+	openers   map[string]string
 	dl        map[string][]string
 }
 
@@ -316,6 +328,16 @@ func (h *fakeHost) url(_ context.Context, id string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.doc.url, nil
+}
+
+func (h *fakeHost) tabs(context.Context) map[string]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]string{}
+	for id := range h.pages {
+		out[id] = h.openers[id]
+	}
+	return out
 }
 
 func (h *fakeHost) forward(_ context.Context, id string) error {
@@ -414,6 +436,25 @@ func (m *fakeModel) systemOne(_ context.Context, body any) ([]byte, error) {
 	}
 	var q decReq
 	_ = json.Unmarshal(raw, &q)
+	if el, ok := q.Questions["element"]; ok {
+		// find: the control whose line names the script's label.
+		m.asked++
+		_, label := m.script(q)
+		var criteria map[string]string
+		_ = json.Unmarshal(el.Criteria, &criteria)
+		probs := map[string]float64{}
+		pick := ""
+		for k, line := range criteria {
+			probs[k] = 0.05
+			if label != "" && strings.Contains(line, label) && pick == "" {
+				pick = k
+			}
+		}
+		if pick != "" {
+			probs[pick] = 0.9
+		}
+		return json.Marshal(map[string]any{"answers": map[string]any{"element": map[string]any{"type": "choice", "choice": pick, "probabilities": probs}}})
+	}
 	if _, ok := q.Questions["irreversible"]; ok {
 		m.asked++
 		return json.Marshal(map[string]any{"answers": map[string]any{"irreversible": map[string]any{"type": "noul", "noul": m.predicate}}})

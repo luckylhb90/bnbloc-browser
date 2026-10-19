@@ -155,9 +155,9 @@ func TestExecutorOnChrome(t *testing.T) {
 	if pw.Value != "" || !pw.Filled {
 		t.Fatalf("password = %+v", pw)
 	}
-	body, _, _, _ := stepRequest("m", pg5, "g", nil)
-	if raw := mustJSON(body); strings.Contains(raw, "hunter2") {
-		t.Fatal("a password's value reached the decision request")
+	view := mustJSON(checkpointResult(nil, nil, &pageView{page: pg5}, ""))
+	if strings.Contains(view, "hunter2") || !strings.Contains(view, "(secret, filled)") {
+		t.Fatalf("the agent's view of a password field: %s", view)
 	}
 }
 
