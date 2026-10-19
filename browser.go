@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"runtime"
 	"strconv"
 	"strings"
@@ -438,25 +443,92 @@ type viewport struct {
 
 // capture is screenshot at a JPEG quality, with the viewport it shows.
 // It works in a window behind others, where Chrome's screencast sends
-// nothing.
+// nothing. Chrome captures at the screen's pixels and the picture is
+// scaled here: a capture Chrome scales (a clip with a scale) resizes the
+// page for its duration, and two at once (the room's view and a step's
+// picture) left a page at the other's scaled size, halving it each time
+// (QA 2026-10-19: a 1200-wide window's page at 512, then 128; reproduced
+// with two sessions capturing at once).
 func capture(ctx context.Context, p browserPage, quality int) (string, viewport, error) {
 	var view viewport
 	_ = evaluate(ctx, p, "({W: innerWidth, H: innerHeight, DPR: devicePixelRatio, Title: document.title, URL: location.href})", &view)
-	params := map[string]any{"format": "jpeg", "quality": quality}
-	if view.W > 0 && view.H > 0 && view.DPR > 0 {
-		scale := 1 / view.DPR
-		if view.W > maxShotWidth {
-			scale = maxShotWidth / view.W / view.DPR
-		}
-		params["clip"] = map[string]any{"x": 0, "y": 0, "width": view.W, "height": view.H, "scale": scale}
-	}
 	var shot struct {
 		Data string `json:"data"`
 	}
-	if err := p.call(ctx, "Page.captureScreenshot", params, &shot); err != nil {
+	if err := p.call(ctx, "Page.captureScreenshot", map[string]any{"format": "jpeg", "quality": quality}, &shot); err != nil {
 		return "", view, err
 	}
-	return shot.Data, view, nil
+	w, h := shotSize(view)
+	if w <= 0 || h <= 0 {
+		return shot.Data, view, nil
+	}
+	scaled, err := scaleJPEG(shot.Data, w, h, quality)
+	if err != nil {
+		return shot.Data, view, nil
+	}
+	return scaled, view, nil
+}
+
+// boxAverage is the average colour of src's pixels in [x0,x1)×[y0,y1).
+// A JPEG decodes to YCbCr, averaged in its own planes (an interface call
+// a pixel made a full-screen picture take 150 ms).
+func boxAverage(src image.Image, x0, y0, x1, y1 int) color.RGBA {
+	if yc, ok := src.(*image.YCbCr); ok {
+		var ys, cbs, crs, n int
+		for sy := y0; sy < y1; sy++ {
+			for sx := x0; sx < x1; sx++ {
+				ys += int(yc.Y[yc.YOffset(sx, sy)])
+				ci := yc.COffset(sx, sy)
+				cbs, crs, n = cbs+int(yc.Cb[ci]), crs+int(yc.Cr[ci]), n+1
+			}
+		}
+		r, g, b := color.YCbCrToRGB(uint8(ys/n), uint8(cbs/n), uint8(crs/n))
+		return color.RGBA{r, g, b, 255}
+	}
+	var r, g, b, n uint32
+	for sy := y0; sy < y1; sy++ {
+		for sx := x0; sx < x1; sx++ {
+			cr, cg, cb, _ := src.At(sx, sy).RGBA()
+			r, g, b, n = r+cr, g+cg, b+cb, n+1
+		}
+	}
+	return color.RGBA{uint8(r / n >> 8), uint8(g / n >> 8), uint8(b / n >> 8), 255}
+}
+
+// scaleJPEG scales a base64 JPEG to w×h by averaging the pixels each
+// target pixel covers; one already that size is answered as it is.
+func scaleJPEG(b64 string, w, h, quality int) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return "", err
+	}
+	src, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	sb := src.Bounds()
+	if sb.Dx() == w && sb.Dy() == h {
+		return b64, nil
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		y0, y1 := sb.Min.Y+y*sb.Dy()/h, sb.Min.Y+(y+1)*sb.Dy()/h
+		if y1 <= y0 {
+			y1 = y0 + 1
+		}
+		for x := 0; x < w; x++ {
+			x0, x1 := sb.Min.X+x*sb.Dx()/w, sb.Min.X+(x+1)*sb.Dx()/w
+			if x1 <= x0 {
+				x1 = x0 + 1
+			}
+			dst.SetRGBA(x, y, boxAverage(src, x0, y0, x1, y1))
+		}
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: quality}); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
 // maxShotWidth bounds a screenshot's width in image pixels.

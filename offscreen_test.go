@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -212,5 +216,55 @@ func TestSamePageOnChrome(t *testing.T) {
 	}
 	if c, _ := observe(ctx, tb); samePage(a, c) {
 		t.Fatal("a new load is the same page")
+	}
+}
+
+// On a real Chrome, pictures taken at once from two sessions leave the
+// page its size (a capture Chrome scaled shrank it, QA 2026-10-19), and a
+// picture is scaled here to at most maxShotWidth.
+func TestCapturesAtOnceKeepThePageSizeOnChrome(t *testing.T) {
+	c := startTestChrome(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	tb, err := openTab(ctx, c, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := navigate(ctx, tb, "data:text/html,<title>x</title><h1>hello</h1>"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := attachTab(ctx, tb.conn, tb.targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after [2]float64
+	_ = evaluate(ctx, tb, "[innerWidth, innerHeight]", &before)
+	var wg sync.WaitGroup
+	shots := make(chan string, 60)
+	for _, p := range []*tab{tb, other} {
+		wg.Add(1)
+		go func(p *tab) {
+			defer wg.Done()
+			for i := 0; i < 30; i++ {
+				if shot, _, err := capture(ctx, p, 50); err == nil {
+					shots <- shot
+				}
+			}
+		}(p)
+	}
+	wg.Wait()
+	close(shots)
+	_ = evaluate(ctx, tb, "[innerWidth, innerHeight]", &after)
+	if before != after {
+		t.Fatalf("the page shrank: %v → %v", before, after)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(<-shots)
+	img, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := shotSize(viewport{W: before[0], H: before[1]})
+	if img.Bounds().Dx() != want || want > maxShotWidth {
+		t.Fatalf("picture %v wide, want %d", img.Bounds().Dx(), want)
 	}
 }
