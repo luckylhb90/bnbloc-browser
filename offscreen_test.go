@@ -145,3 +145,40 @@ func TestReplayPlaysOnChrome(t *testing.T) {
 		t.Fatalf("replay = %+v, %v", got, err)
 	}
 }
+
+// A page laid out far smaller than its window is the shrunk view; one
+// that fills it, or a phone-sized window, is not.
+func TestShrunkViewport(t *testing.T) {
+	for _, c := range []struct {
+		w, h, ww, wh float64
+		want         bool
+	}{
+		{128, 87, 1200, 900, true},
+		{512, 347, 1200, 900, true},
+		{1200, 813, 1200, 900, false},
+		{390, 700, 390, 844, false},
+		{0, 0, 1200, 900, false},
+	} {
+		if got := shrunkViewport(c.w, c.h, c.ww, c.wh); got != c.want {
+			t.Fatalf("shrunkViewport(%v) = %v", c, got)
+		}
+	}
+}
+
+// On a real Chrome, fitting a page that fills its window changes nothing.
+func TestFitViewportLeavesAFittingPageOnChrome(t *testing.T) {
+	c := startTestChrome(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tb, err := openTab(ctx, c, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after [2]float64
+	_ = evaluate(ctx, tb, "[innerWidth, innerHeight]", &before)
+	tb.fitViewport(ctx)
+	_ = evaluate(ctx, tb, "[innerWidth, innerHeight]", &after)
+	if before != after || before[0] == 0 {
+		t.Fatalf("viewport %v → %v", before, after)
+	}
+}

@@ -293,6 +293,8 @@ func attachTab(ctx context.Context, c *cdpConn, targetID string) (*tab, error) {
 	// more of the browser is changed than the run needs.
 	_ = t.call(ctx, "Inspector.enable", nil, nil)
 	_ = t.call(ctx, "Page.enable", nil, nil)
+	// A page laid out far smaller than its window is sized anew (live.go).
+	t.fitViewport(ctx)
 	return t, nil
 }
 

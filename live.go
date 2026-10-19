@@ -569,3 +569,37 @@ func (t *tab) bringForward(ctx context.Context) error {
 	}
 	return t.conn.call(ctx, "", "Target.activateTarget", map[string]any{"targetId": t.targetID}, nil)
 }
+
+// shrunkViewport reports a page laid out far smaller than its window
+// (under half its width or height, the window's own bars aside): what a
+// run's window opened behind the member's others showed on macOS
+// (QA 2026-10-19: a 1200×900 window whose page was 512×347, then 128×87;
+// the quiz's Submit button was off the page and every picture blank).
+func shrunkViewport(innerW, innerH, winW, winH float64) bool {
+	const bars = 200 // the window's tab strip, toolbar and borders, at most
+	return innerW > 0 && innerH > 0 && (innerW*2 < winW || innerH*2 < winH-bars)
+}
+
+// fitViewport lays the tab's page out at its window's size again when it
+// has shrunk (shrunkViewport): resizing the window by a pixel and back
+// makes the browser size the page anew. A minimized window is left alone.
+func (t *tab) fitViewport(ctx context.Context) {
+	var w struct {
+		WindowID int `json:"windowId"`
+		Bounds   struct {
+			Width       float64 `json:"width"`
+			Height      float64 `json:"height"`
+			WindowState string  `json:"windowState"`
+		} `json:"bounds"`
+	}
+	if err := t.conn.call(ctx, "", "Browser.getWindowForTarget", map[string]any{"targetId": t.targetID}, &w); err != nil || w.Bounds.WindowState != "normal" {
+		return
+	}
+	var inner [2]float64
+	if err := evaluate(ctx, t, "[innerWidth*visualViewport.scale, innerHeight*visualViewport.scale]", &inner); err != nil || !shrunkViewport(inner[0], inner[1], w.Bounds.Width, w.Bounds.Height) {
+		return
+	}
+	for _, width := range []float64{w.Bounds.Width - 1, w.Bounds.Width} {
+		_ = t.conn.call(ctx, "", "Browser.setWindowBounds", map[string]any{"windowId": w.WindowID, "bounds": map[string]any{"width": width, "height": w.Bounds.Height}}, nil)
+	}
+}
