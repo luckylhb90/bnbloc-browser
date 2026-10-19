@@ -95,6 +95,11 @@ func (t *tools) browse(ctx context.Context, args json.RawMessage) (any, *rpcErro
 		return checkpointResult(nil, &checkpoint{Kind: cpNeedsHuman,
 			Reason: "this browser is " + sess.Owner + "'s and signed in as them; ask " + sess.Owner + " to let " + sess.Requester + " use it"}, nil, ""), nil
 	}
+	// One browser signs in to a site once at a time (one cookie jar): a
+	// second tab would start a second sign-in that undoes the first.
+	if res := t.waitingSignIn(ctx, site, sess); res != nil {
+		return res, nil
+	}
 	threshold := defaultThreshold
 	if in.Threshold != nil && *in.Threshold >= 0 && *in.Threshold <= 1 {
 		threshold = *in.Threshold
@@ -110,6 +115,40 @@ func (t *tools) browse(ctx context.Context, args json.RawMessage) (any, *rpcErro
 		return nil, toolFailure(err)
 	}
 	return t.drive(ctx, r, tb, sess, nil)
+}
+
+// waitingSignIn answers a run of the requester that waits for them to sign
+// in to site (needs_human), its view shown again under this turn; nil when
+// none does. A run whose tab is gone is dropped; one another call drives
+// is not waiting.
+func (t *tools) waitingSignIn(ctx context.Context, site string, sess component.RelaySession) any {
+	for _, id := range t.runner.store.ids() {
+		r, err := t.runner.store.load(id)
+		if err != nil || r.Checkpoint == nil || r.Checkpoint.Kind != cpNeedsHuman || r.Requester != sess.Requester || !contains(r.Sites, site) {
+			continue
+		}
+		unlock, r, rerr := t.lockRun(id)
+		if rerr != nil {
+			continue
+		}
+		tb, err := t.runner.host.attach(ctx, r.Tab)
+		if err != nil {
+			if errors.Is(err, errTabGone) {
+				t.runner.store.remove(r.ID)
+			}
+			unlock()
+			continue
+		}
+		t.runner.store.stopKeeper(r.ID)
+		if t.keeper != nil {
+			_ = t.keeper(r.ID, sess.JobID)
+		}
+		res := t.result(ctx, r, tb, r.Checkpoint, "this run already waits for the person to sign in to "+site+" (shown in the room): resume it with reply once they say they are done; a second run would start a second sign-in that undoes this one", false)
+		tb.detach(context.Background())
+		unlock()
+		return res
+	}
+	return nil
 }
 
 // defaultThreshold is the irreversibility pause (decided 2026-10-17).

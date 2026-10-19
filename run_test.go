@@ -639,3 +639,83 @@ func TestStuckSignInHandOffGoesOn(t *testing.T) {
 		t.Fatal("an ordinary page counted as a sign-in")
 	}
 }
+
+// A browser signs in to a site once at a time: a new run on a site where
+// one waits for the person to sign in answers that run (shown again under
+// this turn) instead of opening a second tab, whose sign-in would undo the
+// first. Once its tab is gone, a new run opens as usual.
+func TestOneSignInPerSite(t *testing.T) {
+	p, _, _ := expensePortal()
+	h := newHarness(t, p, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	var kept [][2]string
+	h.tools.keeper = func(run, job string) error { kept = append(kept, [2]string{run, job}); return nil }
+	head, _ := h.call("browse", map[string]any{"goal": "file an expense", "url": "https://portal.example.com/expenses/new"})
+	run := head["run"].(string)
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
+	again, _ := h.call("browse", map[string]any{"goal": "check the expense list", "url": "https://portal.example.com/expenses"})
+	if again["run"] != run || again["checkpoint"] != cpNeedsHuman || h.host.opened != 1 {
+		t.Fatalf("a second sign-in started: %v (tabs opened %d)", again, h.host.opened)
+	}
+	if last := kept[len(kept)-1]; last != [2]string{run, "job-2"} {
+		t.Fatalf("the waiting view was not shown under this turn: %v", kept)
+	}
+	// Another site signs in on its own.
+	other, _ := h.call("browse", map[string]any{"goal": "look", "url": "https://travel.example.org/"})
+	if other["run"] == run || h.host.opened != 2 {
+		t.Fatalf("another site = %v (tabs opened %d)", other, h.host.opened)
+	}
+	// The tab is gone: the run is dropped and a new one starts.
+	h.host.mu.Lock()
+	delete(h.host.pages, "tab-1")
+	h.host.mu.Unlock()
+	fresh, _ := h.call("browse", map[string]any{"goal": "check the expense list", "url": "https://portal.example.com/expenses"})
+	if fresh["run"] == run || h.host.opened != 3 {
+		t.Fatalf("after the tab closed = %v (tabs opened %d)", fresh, h.host.opened)
+	}
+	if _, err := h.tools.runner.store.load(run); err == nil {
+		t.Fatal("the run of the closed tab was kept")
+	}
+}
+
+// The room shows one view per job: a newer run's keeper takes the job and
+// the older keeper leaves without posting an end (that would close the
+// newer view).
+func TestNewestKeeperHoldsTheJob(t *testing.T) {
+	signIn := &fakeDoc{url: "https://login.idp.example.net/authorize", title: "Sign in", text: "Sign in", key: "idp", actions: []action{
+		{Kind: "secret", Node: node(1), Role: "textbox", Label: "Password"},
+	}}
+	h := newHarness(t, &fakePage{doc: signIn}, func(q decReq) (string, string) { return opNeedsHuman, "" })
+	var mu sync.Mutex
+	ends := 0
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
+		mu.Lock()
+		defer mu.Unlock()
+		if post.End {
+			ends++
+		}
+		return component.LiveFrameReply{}
+	}
+	h.tools.keeper = func(run, job string) error { return nil }
+	first, _ := h.call("browse", map[string]any{"goal": "a", "url": "https://portal.example.com/"})
+	second, _ := h.call("browse", map[string]any{"goal": "b", "url": "https://travel.example.org/"})
+	store := h.tools.runner.store
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- keep(ctx, h.tools.gw, h.host, store, first["run"].(string), "job-1") }()
+	time.Sleep(300 * time.Millisecond)
+	go func() { _ = keep(ctx, h.tools.gw, h.host, store, second["run"].(string), "job-1") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("older keeper = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the older keeper kept the job")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if ends != 0 {
+		t.Fatalf("the older keeper ended the job's view (%d ends)", ends)
+	}
+}

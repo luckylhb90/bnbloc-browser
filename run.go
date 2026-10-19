@@ -195,6 +195,18 @@ func (s runStore) save(r *runState) error {
 
 func (s runStore) remove(id string) { _ = os.Remove(s.path(id)) }
 
+// ids lists the stored runs.
+func (s runStore) ids() []string {
+	entries, _ := os.ReadDir(s.dir)
+	var out []string
+	for _, e := range entries {
+		if id, ok := strings.CutSuffix(e.Name(), ".json"); ok && strings.HasPrefix(id, "brun_") {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // decider asks the decision model through the relay.
 type decider interface {
 	systemOne(ctx context.Context, body any) ([]byte, error)

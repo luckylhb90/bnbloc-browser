@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -23,7 +25,10 @@ import (
 //     shows the run under its own turn;
 //   - the owner closes the view from the room (LiveInputClose);
 //   - the tab or the browser is gone;
-//   - the relay refuses its posts (the agent's session was released).
+//   - the relay refuses its posts (the agent's session was released);
+//   - another run's keeper takes the job: the room shows one view per job,
+//     so the newest holds it and an older one leaves quietly (its End
+//     would close the newer view).
 //
 // No clock ends it: it waits for as long as the view waits.
 
@@ -34,6 +39,22 @@ const keepFailures = 3
 const keepPostFor = 20 * time.Second
 
 func (s runStore) keepLock(id string) string { return s.path(id) + ".keep.lock" }
+
+// jobKeeper names the file that says which run's keeper holds a job's view.
+func (s runStore) jobKeeper(job string) string {
+	return filepath.Join(s.dir, "keeper-"+strings.Map(func(r rune) rune {
+		if r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return r
+		}
+		return '_'
+	}, job))
+}
+
+// holdsJob reports whether run's keeper still holds job's view.
+func (s runStore) holdsJob(job, run string) bool {
+	raw, err := os.ReadFile(s.jobKeeper(job))
+	return err != nil || string(raw) == run
+}
 func (s runStore) keepStop(id string) string { return s.path(id) + ".keep.stop" }
 
 // stopKeeper stops the run's keeper, if one runs, and waits for it to post
@@ -93,6 +114,9 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		logKeep("the run is not paused for a person")
 		return err
 	}
+	if err := os.WriteFile(store.jobKeeper(job), []byte(runID), 0o600); err != nil {
+		return err
+	}
 	logKeep("holding the view of %s under %s", runID, job)
 	end := func() {
 		ectx, cancel := context.WithTimeout(context.Background(), keepPostFor)
@@ -117,6 +141,10 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 	var last [32]byte
 	failures := 0
 	for {
+		if !store.holdsJob(job, runID) {
+			logKeep("ended: another run's view took the job")
+			return nil
+		}
 		if stopped(store, runID) || f.isClosed() || !stillWaiting(store, runID) {
 			logKeep("ended: resumed or closed")
 			end()
