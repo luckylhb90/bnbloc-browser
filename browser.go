@@ -79,6 +79,12 @@ var errStale = errors.New("the page changed since it was observed")
 // confirmed (an interrupted native select): never retried blindly.
 var errUnconfirmed = errors.New("the dropdown change could not be confirmed")
 
+// blockedError: the control is there but cannot take input now (covered,
+// disabled, hidden); nothing was done.
+type blockedError struct{ why string }
+
+func (e blockedError) Error() string { return e.why }
+
 // browserPage is the executor's view of one tab: the CDP calls it needs.
 // The tab implements it; tests substitute a fake.
 type browserPage interface {
@@ -182,22 +188,44 @@ func jsonEqual(a, b json.RawMessage) bool {
 }
 
 // targetJS resolves an observed node for input: connected, enabled,
-// visible, inside the viewport and not covered at its center (hit-tested);
-// a select is set here to the observed option. It answers the center, or
-// null.
+// visible, and a point of it (or of its label) inside the viewport that is
+// not covered (hit-tested). A control under a bar fixed to the window's
+// edge is scrolled to the middle first, then any uncovered point of it is
+// used (QA 2026-10-19: a quiz answer in a small window sat under the
+// page's bottom bar, and every click was refused). A select is set here to
+// the observed option. It answers the point, {why} when the control is
+// there but cannot take input now, or null when it is gone.
 const targetJS = `(action => {
   const e=window.__bnblocBrowse?.nodes.get(action.node);
-  if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
-      !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
-  if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
-  let r=e.getBoundingClientRect();
-  if (r.x+r.width/2<0 || r.y+r.height/2<0 || r.x+r.width/2>=innerWidth || r.y+r.height/2>=innerHeight) {
+  if (!e?.isConnected) return null;
+  if (e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]')) return {why:'it is disabled'};
+  if (!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return {why:'it is hidden'};
+  if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return {why:'it is read-only'};
+  const targets=[e,...[...(e.labels||[])].filter(l=>l.checkVisibility())];
+  const inside=(x,y)=>x>=0 && y>=0 && x<innerWidth && y<innerHeight;
+  const point=()=>{
+    for (const t of targets) {
+      const r=t.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      for (const [fx,fy] of [[.5,.5],[.2,.5],[.8,.5],[.5,.2],[.5,.8],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
+        const x=r.x+r.width*fx, y=r.y+r.height*fy, hit=inside(x,y) && document.elementFromPoint(x,y);
+        if (hit && t.contains(hit)) return {x,y};
+      }
+    }
+    return null;
+  };
+  let r=e.getBoundingClientRect(), at=inside(r.x+r.width/2,r.y+r.height/2) && point();
+  if (!at) {
     e.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
-    r=e.getBoundingClientRect();
+    at=point();
   }
-  const x=r.x+r.width/2, y=r.y+r.height/2;
-  if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-  if (!e.contains(document.elementFromPoint(x,y))) return null;
+  if (!at) {
+    r=e.getBoundingClientRect();
+    const x=r.x+r.width/2, y=r.y+r.height/2, hit=inside(x,y) && document.elementFromPoint(x,y);
+    if (!hit) return {why:'it does not fit in the window'};
+    const what=(hit.getAttribute('aria-label')||hit.innerText||hit.getAttribute('title')||'').trim().slice(0,60);
+    return {why:'it is covered by '+(what ? JSON.stringify(what)+' ' : '')+'('+hit.tagName.toLowerCase()+')'};
+  }
   if (action.kind==='select') {
     if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
         !o.disabled && !o.closest('optgroup[disabled]'))) return null;
@@ -205,7 +233,7 @@ const targetJS = `(action => {
     e.dispatchEvent(new Event('input',{bubbles:true}));
     e.dispatchEvent(new Event('change',{bubbles:true}));
   }
-  return {x,y};
+  return at;
 })`
 
 // settleJS waits after an input: two animation frames, or for an editable
@@ -262,7 +290,10 @@ func act(ctx context.Context, p browserPage, pg *page, a action, text string) er
 		return errors.New("the action names no observed node")
 	}
 	raw, _ := json.Marshal(map[string]any{"node": *a.Node, "kind": a.Kind, "value": a.Value})
-	var target *struct{ X, Y float64 }
+	var target *struct {
+		X, Y float64
+		Why  string
+	}
 	if err := evaluate(ctx, p, "("+targetJS+")("+string(raw)+")", &target); err != nil {
 		if a.Kind == "select" {
 			return errUnconfirmed
@@ -271,6 +302,9 @@ func act(ctx context.Context, p browserPage, pg *page, a action, text string) er
 			return errStale
 		}
 		return err
+	}
+	if target != nil && target.Why != "" {
+		return blockedError{target.Why}
 	}
 	if target == nil {
 		if a.Kind == "select" {

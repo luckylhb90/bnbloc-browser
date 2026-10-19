@@ -361,8 +361,13 @@ func (t *tools) act(ctx context.Context, args json.RawMessage) (any, *rpcError) 
 // do runs one action on pg: a checkpoint when it must wait, a note when it
 // did nothing.
 func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, pg *page, in actInput) (*checkpoint, string, error) {
-	record := func(a action, text string) {
-		r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: strings.ToUpper(in.Action), Action: a.Label, Kind: a.Kind, Text: text, URL: pg.URL, AtMs: t.runner.now().UnixMilli()})
+	// done records an action that ran (the record is what happened, not
+	// what was tried) and passes its error on.
+	done := func(a action, text string, err error) error {
+		if err == nil {
+			r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: strings.ToUpper(in.Action), Action: a.Label, Kind: a.Kind, Text: text, URL: pg.URL, AtMs: t.runner.now().UnixMilli()})
+		}
+		return err
 	}
 	pick := func(kinds ...string) (action, bool) {
 		if in.Element == nil {
@@ -403,8 +408,7 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 		if in.Confirmed && a.Href != "" && !r.onSite(a.Href) && !contains(r.Sites, siteOf(a.Href)) {
 			r.Sites = append(r.Sites, siteOf(a.Href))
 		}
-		record(a, "")
-		return nil, "", act(ctx, tb, pg, a, "")
+		return nil, "", done(a, "", act(ctx, tb, pg, a, ""))
 	case "type":
 		if a, ok := pick("secret"); ok {
 			return waitForPerson(elementOf(a), waitSecret), "", nil
@@ -413,8 +417,7 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 		if !ok {
 			return nil, noControl(in.Element, "to type into"), nil
 		}
-		record(a, in.Text)
-		return nil, "", act(ctx, tb, pg, a, in.Text)
+		return nil, "", done(a, in.Text, act(ctx, tb, pg, a, in.Text))
 	case "select":
 		if in.Element == nil {
 			return nil, noControl(nil, "to select in"), nil
@@ -426,8 +429,7 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 			}
 			_, label, _ := strings.Cut(a.Label, " → ")
 			if strings.ToLower(strings.TrimSpace(label)) == want || strings.ToLower(a.Value) == want {
-				record(a, in.Option)
-				return nil, "", act(ctx, tb, pg, a, "")
+				return nil, "", done(a, in.Option, act(ctx, tb, pg, a, ""))
 			}
 		}
 		return nil, "no option " + strconv.Quote(in.Option) + " of that dropdown (it may be selected already); read the page below", nil
@@ -469,8 +471,7 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 		if err != nil {
 			return nil, err.Error(), nil
 		}
-		record(a, in.File)
-		return nil, "", t.runner.upload(ctx, r, tb, &pendingStep{Operation: opUpload, Action: a, Fingerprint: pg.Fingerprint}, path)
+		return nil, "", done(a, in.File, t.runner.upload(ctx, r, tb, &pendingStep{Operation: opUpload, Action: a, Fingerprint: pg.Fingerprint}, path))
 	}
 	return nil, "unknown action " + strconv.Quote(in.Action), nil
 }
@@ -520,6 +521,8 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 	before := t.runner.host.tabs(ctx)
 	cp, note, err := do(live, pg)
 	switch {
+	case errors.As(err, new(blockedError)):
+		note = "that control cannot take input now: " + err.Error() + ". Nothing was done; read the page below (a popup to close, a field to fill first, or another control)"
 	case errors.Is(err, errStale):
 		note = "the page changed before the action, so nothing was done; read the page below and act again"
 	case errors.Is(err, errUnconfirmed):
