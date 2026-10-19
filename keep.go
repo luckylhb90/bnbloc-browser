@@ -111,6 +111,9 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		pg, err := observe(ctx, tb)
 		return err == nil && r.movedOn(pg)
 	}
+	// The owner's input runs as it arrives (inputs), beside the frames.
+	go f.inputs()
+	defer f.stopOnce.Do(func() { close(f.stop) })
 	var last [32]byte
 	failures := 0
 	for {
@@ -137,7 +140,7 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 			logKeep("ended: the relay refuses the view (%s)", f.refusal())
 			return nil // the session is gone, and the view with it
 		}
-		if !waitStop(ctx, store, runID, every) {
+		if !waitStop(ctx, store, runID, every, f.poke) {
 			end()
 			return ctx.Err()
 		}
@@ -162,13 +165,18 @@ func stillWaiting(store runStore, runID string) bool {
 	return err == nil && r.Checkpoint != nil && r.Checkpoint.Kind == cpNeedsHuman
 }
 
-// waitStop waits d, looking for a stop request meanwhile; false when ctx
-// ended.
-func waitStop(ctx context.Context, store runStore, runID string, d time.Duration) bool {
+// waitStop waits d, looking for a stop request meanwhile, or less when
+// input just ran (poke: the page is looked at liveAfterInput after it);
+// false when ctx ended.
+func waitStop(ctx context.Context, store runStore, runID string, d time.Duration, poke <-chan struct{}) bool {
 	until := time.Now().Add(d)
 	for time.Now().Before(until) && !stopped(store, runID) {
-		if sleepCtx(ctx, min(100*time.Millisecond, time.Until(until))) != nil {
+		select {
+		case <-ctx.Done():
 			return false
+		case <-poke:
+			return sleepCtx(ctx, liveAfterInput) == nil
+		case <-time.After(min(100*time.Millisecond, time.Until(until))):
 		}
 	}
 	return true

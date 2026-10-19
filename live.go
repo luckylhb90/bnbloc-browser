@@ -33,6 +33,11 @@ const (
 	liveAfterInput = 60 * time.Millisecond
 	liveQuality    = 50
 	liveCaptureFor = 2 * time.Second
+	// liveInputPostFor bounds one post of the input loop (realtime holds
+	// it at most half a second).
+	liveInputPostFor = 10 * time.Second
+	// liveAskEvery is how often the input loop asks, nobody in control.
+	liveAskEvery = time.Second
 )
 
 // liveFeed is one call's live view, or a paused run's that a keeper holds
@@ -61,6 +66,8 @@ type liveFeed struct {
 	// refused is the last refusal of a post (the keeper logs it).
 	refusedBy string
 
+	// poke asks the frame loop to look at the page now (input just ran).
+	poke     chan struct{}
 	stop     chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
@@ -81,6 +88,7 @@ func startLive(gw *relay, tb tabHandle, run string) *liveFeed {
 		return f
 	}
 	go f.loop(every)
+	go f.inputs()
 	return f
 }
 
@@ -88,7 +96,7 @@ func startLive(gw *relay, tb tabHandle, run string) *liveFeed {
 // so a later feed of the run (a keeper, the next call) never posts a lower
 // sequence than an earlier one.
 func newFeed(gw *relay, tb tabHandle, run string) *liveFeed {
-	return &liveFeed{gw: gw, tab: tb, run: run, seq: time.Now().UnixMilli(), stop: make(chan struct{}), done: make(chan struct{})}
+	return &liveFeed{gw: gw, tab: tb, run: run, seq: time.Now().UnixMilli(), poke: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
 }
 
 // end stops the feed and waits for it.
@@ -128,6 +136,10 @@ func (f *liveFeed) loop(every time.Duration) {
 		case <-f.stop:
 			return
 		case <-time.After(every):
+		case <-f.poke:
+			if sleepCtx(ctx, liveAfterInput) != nil {
+				return
+			}
 		}
 		next, ok := f.tick(ctx, &last)
 		if !ok {
@@ -179,13 +191,13 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	// it only while posts go on.
 	keep := f.waiting != "" && time.Since(f.posted) >= component.LiveKeepEverySec*time.Second/2
 	f.mu.Unlock()
-	controlled := f.holder() != ""
-	if post.Data == "" && !controlled && !keep && !readyChanged {
+	if post.Data == "" && !keep && !readyChanged {
 		return f.pace(), true
 	}
-	// Nothing new to show while someone drives: wait for their input
-	// instead of asking again and again (realtime answers as it arrives).
-	post.WaitInput = post.Data == "" && controlled
+	// While someone drives, their input is the input loop's (inputs): a
+	// frame leaves it queued, so a keystroke never waits behind a capture
+	// and its upload.
+	post.LeaveInput = f.holder() != ""
 	reply, err := f.gw.liveFrame(ctx, f.job, post)
 	var re *relayError
 	switch {
@@ -200,14 +212,62 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	f.mu.Lock()
 	f.controller, f.watched, f.posted = reply.Controller, reply.Watching, time.Now()
 	f.mu.Unlock()
+	// Input in a frame's reply: the owner's focus or close (no control
+	// needed), or anyone's from a realtime that does not leave it.
 	f.apply(ctx, reply.Input)
 	if len(reply.Input) > 0 {
 		return liveAfterInput, true
 	}
-	if post.WaitInput {
-		return 0, true // the post already waited
-	}
 	return f.pace(), true
+}
+
+// inputs runs the controller's input as it arrives: while someone holds
+// control, an empty post that waits for it (WaitInput; realtime answers as
+// it is queued), its input run on the tab, the frame loop poked to show
+// the result, and again. Nobody in control, an empty post every
+// liveAskEvery learns when someone takes it (and the owner's focus or
+// close), however still the page stands.
+func (f *liveFeed) inputs() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-f.stop:
+		case <-f.done:
+		}
+		cancel()
+	}()
+	for ctx.Err() == nil {
+		controlled := f.holder() != ""
+		f.mu.Lock()
+		post := liveFramePost{Run: f.run, Waiting: f.waiting, Ready: f.isReady, WaitInput: controlled}
+		f.mu.Unlock()
+		pctx, pcancel := context.WithTimeout(ctx, liveInputPostFor)
+		reply, err := f.gw.liveFrame(pctx, f.job, post)
+		pcancel()
+		if err != nil {
+			// Refused or unreachable: the frame loop decides whether the
+			// view goes on; this one tries again shortly.
+			if sleepCtx(ctx, liveWatchedEvery) != nil {
+				return
+			}
+			continue
+		}
+		f.mu.Lock()
+		f.controller, f.watched, f.posted = reply.Controller, reply.Watching, time.Now()
+		f.mu.Unlock()
+		if len(reply.Input) > 0 {
+			f.apply(ctx, reply.Input)
+			select {
+			case f.poke <- struct{}{}:
+			default:
+			}
+			continue
+		}
+		if !controlled && sleepCtx(ctx, liveAskEvery) != nil {
+			return
+		}
+	}
 }
 
 // announce posts the view's picture now, saying what it waits for (the
@@ -279,6 +339,9 @@ type liveFramePost struct {
 	// WaitInput: an empty post that waits a moment for the controller's
 	// input (component.LiveFramePost.WaitInput).
 	WaitInput bool `json:"waitInput,omitempty"`
+	// LeaveInput: the post takes none of the queued input (the input
+	// loop's; component.LiveFramePost.LeaveInput).
+	LeaveInput bool `json:"leaveInput,omitempty"`
 }
 
 // liveFrame posts one frame (or an empty post) through the relay, under

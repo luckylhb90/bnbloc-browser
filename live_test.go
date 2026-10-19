@@ -123,3 +123,48 @@ func TestKeyEventEditCommands(t *testing.T) {
 		}
 	}
 }
+
+// While a person drives, their input runs as it arrives, through the input
+// loop's waiting posts: frames leave it queued, so a keystroke never waits
+// behind a capture.
+func TestLiveInputRunsBesideTheFrames(t *testing.T) {
+	p, _, _ := expensePortal()
+	var mu sync.Mutex
+	controller := "maya"
+	var waited, frameTook bool
+	posts := 0
+	h := newHarness(t, p, func(q decReq) (string, string) { return opDone, "" })
+	h.relay.live = func(post liveFramePost) component.LiveFrameReply {
+		mu.Lock()
+		defer mu.Unlock()
+		reply := component.LiveFrameReply{Controller: controller}
+		posts++
+		// The first post learns who drives; every later frame knows.
+		if posts > 1 && post.Data != "" && !post.LeaveInput && controller != "" {
+			frameTook = true
+		}
+		if post.WaitInput && !waited {
+			waited = true
+			reply.Input = []component.LiveInput{{Type: component.LiveInputText, Text: "typed fast"}}
+			go func() {
+				time.Sleep(300 * time.Millisecond)
+				mu.Lock()
+				controller = ""
+				mu.Unlock()
+			}()
+		}
+		return reply
+	}
+	head, _ := h.call("browse", map[string]any{"goal": "look around", "url": "https://portal.example.com/expenses/new"})
+	if head["checkpoint"] != cpDone {
+		t.Fatalf("checkpoint = %v", head)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !waited || !contains(p.typed, "typed fast") {
+		t.Fatalf("the waiting post's input did not run: waited %v typed %v", waited, p.typed)
+	}
+	if frameTook {
+		t.Fatal("a frame post took input while someone drove")
+	}
+}
