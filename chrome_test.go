@@ -286,3 +286,53 @@ func TestOutdatedBrowserRestarts(t *testing.T) {
 		t.Fatalf("the outdated browser is still running:\n%s", out)
 	}
 }
+
+// Where the browser cannot start (a process confined away from its
+// profile, as an agent's sandbox is; QA 2026-10-19), an outdated browser
+// is kept, never closed: closing it would leave none. Starting one there
+// says why it cannot, and never takes an earlier browser's port file for
+// a new one.
+func TestConfinedProcessKeepsTheBrowser(t *testing.T) {
+	if testing.Short() {
+		t.Skip("a real browser: not in -short")
+	}
+	if _, err := findChrome(os.Getenv("BNBLOC_BROWSER_CHROME")); err != nil {
+		t.Skip("no Chrome or Chromium on this machine")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only directory")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	dir, err := os.MkdirTemp("", "bnbloc-browser-confined")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := dir + "/profile"
+	t.Cleanup(func() { _ = os.Chmod(profile, 0o700); time.Sleep(time.Second); _ = os.RemoveAll(dir) })
+	cfg := hostConfig{Profile: profile, Headless: true, EndpointFile: dir + "/endpoint.json", Chrome: os.Getenv("BNBLOC_BROWSER_CHROME")}
+	cmd, url, err := startChrome(ctx, cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	old := endpointRecord{URL: url, PID: cmd.Process.Pid} // no flags: outdated
+	if err := writeEndpoint(cfg.EndpointFile, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(profile, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	h := newLocalHost(cfg)
+	if _, err := h.connect(ctx); err != nil {
+		t.Fatalf("connect = %v", err)
+	}
+	if rec, _ := readEndpoint(cfg.EndpointFile); rec.PID != old.PID || !processAlive(old.PID) {
+		t.Fatalf("a confined process closed the browser: %+v", rec)
+	}
+	// Starting one there fails plainly (the old port file stays unread).
+	if _, _, err := startChrome(ctx, cfg, true); err == nil || !strings.Contains(err.Error(), "not writable") {
+		t.Fatalf("start in a confined process = %v", err)
+	}
+}

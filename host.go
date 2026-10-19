@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,6 +164,12 @@ func (h *localHost) closeOutdated(ctx context.Context, c *cdpConn, rec endpointR
 			return false
 		}
 	}
+	// Closed only where a new one can start: a confined process (an
+	// agent's sandbox) cannot, and would leave no browser at all (QA,
+	// 2026-10-19).
+	if !profileWritable(h.cfg.Profile) {
+		return false
+	}
 	_ = c.call(ctx, "", "Browser.close", nil, nil)
 	c.close()
 	deadline := time.Now().Add(15 * time.Second)
@@ -174,6 +181,21 @@ func (h *localHost) closeOutdated(ctx context.Context, c *cdpConn, rec endpointR
 	}
 	_ = os.Remove(h.cfg.EndpointFile)
 	return true
+}
+
+// profileWritable reports whether this process may write the browser's
+// profile (a browser started from here could run on it).
+func profileWritable(dir string) bool {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false
+	}
+	f, err := os.CreateTemp(dir, ".bnbloc-write-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name) == nil
 }
 
 // browserHost is where runs' tabs live: the member's dedicated profile
@@ -326,8 +348,16 @@ func startChrome(ctx context.Context, cfg hostConfig, detached bool) (*exec.Cmd,
 	if err := os.MkdirAll(cfg.Profile, 0o700); err != nil {
 		return nil, "", fmt.Errorf("the browser profile %s: %w", cfg.Profile, err)
 	}
+	// A browser that cannot write its profile (a process confined away
+	// from it: an agent's sandbox) never comes up, and an earlier
+	// browser's port file left behind would name a browser that is gone.
+	if !profileWritable(cfg.Profile) {
+		return nil, "", fmt.Errorf("the browser cannot be started from here: its profile %s is not writable (this process is confined, e.g. an agent's sandbox); start it from the desktop", cfg.Profile)
+	}
 	portFile := filepath.Join(cfg.Profile, "DevToolsActivePort")
-	_ = os.Remove(portFile)
+	if err := os.Remove(portFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, "", fmt.Errorf("clear the browser's last port file: %w", err)
+	}
 	cmd := exec.Command(bin, chromeArgs(cfg)...)
 	if detached {
 		detach(cmd)
