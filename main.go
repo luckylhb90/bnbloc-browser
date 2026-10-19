@@ -86,7 +86,7 @@ func main() {
 	}
 	cwd, _ := os.Getwd()
 	t := &tools{gw: gw, runner: &runner{model: *model, dec: gw, host: newLocalHost(cfg), store: store,
-		downloads: filepath.Join(cwd, "downloads"), budget: *budget, now: time.Now}}
+		downloads: filepath.Join(cwd, "downloads"), budget: *budget, now: time.Now}, workspace: cwd}
 	if exe, err := os.Executable(); err == nil {
 		t.keeper = func(run, job string) error { return startKeeper(exe, args, store, run, job) }
 	}

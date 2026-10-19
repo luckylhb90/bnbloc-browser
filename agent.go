@@ -126,7 +126,11 @@ func (t *tools) open(ctx context.Context, args json.RawMessage) (any, *rpcError)
 		r.Sites = append(r.Sites, site)
 	}
 	return t.step(ctx, r, tb, sess, func(*liveFeed, *page) (*checkpoint, string, error) {
-		return nil, "", navigate(ctx, tb, in.URL)
+		if err := navigate(ctx, tb, in.URL); err != nil {
+			return nil, "", err
+		}
+		r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: "OPEN", Action: in.URL, Kind: "nav", URL: in.URL, AtMs: t.runner.now().UnixMilli()})
+		return nil, "", nil
 	})
 }
 
@@ -438,21 +442,21 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 		if key.Key == "" {
 			return nil, "press takes Enter, Tab, Escape, Backspace, Space, PageUp, PageDown or an arrow key", nil
 		}
-		r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: "PRESS", Action: key.Key, Kind: "key", URL: pg.URL, AtMs: t.runner.now().UnixMilli()})
 		key.Action = "down"
 		if err := tb.call(ctx, "Input.dispatchKeyEvent", keyEvent(key), nil); err != nil {
 			return nil, "", err
 		}
 		key.Action, key.Text = "up", ""
-		return nil, "", tb.call(ctx, "Input.dispatchKeyEvent", keyEvent(key), nil)
+		return nil, "", done(action{Label: key.Key, Kind: "key"}, "", tb.call(ctx, "Input.dispatchKeyEvent", keyEvent(key), nil))
 	case "scroll":
 		delta := float64(pg.H) * 0.8
 		if in.Direction == "up" {
 			delta = -delta
 		}
-		return nil, "", tb.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": "mouseWheel", "x": 10, "y": 10, "deltaX": 0, "deltaY": delta}, nil)
+		return nil, "", done(action{Label: "Scroll " + map[bool]string{true: "up", false: "down"}[delta < 0], Kind: "scroll"}, "",
+			tb.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": "mouseWheel", "x": 10, "y": 10, "deltaX": 0, "deltaY": delta}, nil))
 	case "back":
-		return nil, "", evaluate(ctx, tb, "history.back()", nil)
+		return nil, "", done(action{Label: "Back", Kind: "nav"}, "", evaluate(ctx, tb, "history.back()", nil))
 	case "wait":
 		if crashedOf(tb) {
 			return nil, "", tb.(crashPage).reload(ctx)
@@ -519,6 +523,7 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 		pg = &page{}
 	}
 	before := t.runner.host.tabs(ctx)
+	steps, paused := len(r.History), r.Checkpoint
 	cp, note, err := do(live, pg)
 	switch {
 	case errors.As(err, new(blockedError)):
@@ -546,6 +551,15 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 		cp = t.settle(ctx, r, tb)
 	}
 	r.Checkpoint = cp
+	// The replay pictures what the run did, never a sign-in (§2.8a).
+	switch {
+	case cp != nil && cp.Kind == cpNeedsHuman:
+		if paused == nil || paused.Kind != cpNeedsHuman {
+			r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: "PERSON", Action: "A person signs in here", Kind: "person", AtMs: t.runner.now().UnixMilli()})
+		}
+	case len(r.History) > steps:
+		t.keepFrame(ctx, r, tb)
+	}
 	if cp != nil {
 		r.PausedJob = sess.JobID
 		if pg, err := observe(ctx, tb); err == nil {
@@ -555,6 +569,7 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 	if err := t.runner.store.save(r); err != nil {
 		return nil, toolFailure(err)
 	}
+	t.writeReplay(r)
 	if cp != nil && cp.Kind == cpNeedsHuman {
 		// Only the person can go on: the view stays in the room for them.
 		live.end()

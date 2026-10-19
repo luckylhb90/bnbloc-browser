@@ -24,6 +24,9 @@ type tools struct {
 	// keeper starts the keeper of a run paused for a person, under the
 	// pausing turn's job (keep.go); nil keeps no view after the call.
 	keeper func(run, job string) error
+	// workspace is the agent's workspace, where a run's replay is written
+	// (replay.go); "" writes none.
+	workspace string
 }
 
 // errNotRequester: a run is resumed only by the turns of the person it

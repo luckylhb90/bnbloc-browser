@@ -80,6 +80,8 @@ type historyRecord struct {
 	PageChanged *bool   `json:"pageChanged,omitempty"`
 	Confidence  float64 `json:"confidence"`
 	AtMs        int64   `json:"atMs"`
+	// Frame: the page after the step is pictured (replay.go).
+	Frame bool `json:"frame,omitempty"`
 }
 
 // checkpoint is a pause: what it is, what it is about, and what the agent
@@ -188,7 +190,10 @@ func (s runStore) save(r *runState) error {
 	return os.Rename(tmp, s.path(r.ID))
 }
 
-func (s runStore) remove(id string) { _ = os.Remove(s.path(id)) }
+func (s runStore) remove(id string) {
+	_ = os.Remove(s.path(id))
+	_ = os.RemoveAll(s.framesDir(id))
+}
 
 // ids lists the stored runs.
 func (s runStore) ids() []string {

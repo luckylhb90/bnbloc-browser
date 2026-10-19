@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -100,5 +101,47 @@ func TestCoveredControlOnChrome(t *testing.T) {
 	var blocked blockedError
 	if err := act(ctx, tb, pg, a, ""); !errors.As(err, &blocked) || !strings.Contains(blocked.why, `covered by "Loading"`) {
 		t.Fatalf("click under the overlay = %v", err)
+	}
+}
+
+// On a real Chrome, a replay pictured from a real page plays: its steps
+// list, the latest picture shown, and a step chosen from the list.
+func TestReplayPlaysOnChrome(t *testing.T) {
+	c := startTestChrome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<title>quiz</title><h1>Question 2 of 15</h1>`))
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tb, err := openTab(ctx, c, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := navigate(ctx, tb, srv.URL+"/"); err != nil {
+		t.Fatal(err)
+	}
+	tl := &tools{runner: &runner{store: runStore{dir: t.TempDir()}}, workspace: t.TempDir()}
+	r := &runState{ID: "brun_chrome", Sites: []string{"example.com"}}
+	r.History = []historyRecord{{Step: 1, Operation: "OPEN", Action: srv.URL, URL: srv.URL}, {Step: 2, Operation: "CLICK", Action: "Submit", URL: srv.URL}}
+	for i := range r.History {
+		tl.keepFrame(ctx, &runState{ID: r.ID, History: r.History[:i+1]}, tb)
+		r.History[i].Frame = true
+	}
+	tl.writeReplay(r)
+	if err := navigate(ctx, tb, "file://"+filepath.Join(tl.workspace, replayDir, r.ID+".html")); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Steps int
+		Shown string
+		Img   bool
+	}
+	// A JPEG in base64 starts "/9j/".
+	expr := `(()=>{const s=document.querySelectorAll('li').length;document.querySelectorAll('li')[0].click();
+	  const img=document.querySelector('#shot img');return {Steps:s,Shown:document.getElementById('what').textContent,Img:!!img&&img.src.startsWith('data:image/jpeg;base64,/9j/')}})()`
+	if err := evaluate(ctx, tb, expr, &got); err != nil || got.Steps != 2 || !strings.HasPrefix(got.Shown, "1. Opened") || !got.Img {
+		t.Fatalf("replay = %+v, %v", got, err)
 	}
 }
