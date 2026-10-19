@@ -4,6 +4,6 @@ go 1.24.0
 
 require (
 	github.com/coder/websocket v1.8.15
-	github.com/luckylhb90/bnbloc v0.1.1-0.20261019083846-177a08d28123
+	github.com/luckylhb90/bnbloc v0.1.1-0.20261019235257-657409a15904
 	golang.org/x/net v0.47.0
 )

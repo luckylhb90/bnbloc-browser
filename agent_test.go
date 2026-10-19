@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luckylhb90/bnbloc/component"
+	"github.com/luckylhb90/bnbloc/core/pkgmeta"
 )
 
 // The agent drives: open answers the page with its numbered controls,
@@ -272,14 +273,8 @@ func TestPackageDeclaresTheTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var pkg struct {
-		MCP struct {
-			Tools []struct {
-				Name string `json:"name"`
-			} `json:"tools"`
-		} `json:"mcp"`
-	}
-	if err := json.Unmarshal(raw, &pkg); err != nil {
+	pkg, err := parsePublished(raw)
+	if err != nil {
 		t.Fatal(err)
 	}
 	var declared []string
@@ -289,4 +284,23 @@ func TestPackageDeclaresTheTools(t *testing.T) {
 	if strings.Join(declared, ",") != "browser_open,browser_view,browser_find,browser_act,browser_close" {
 		t.Fatalf("package.json declares %v", declared)
 	}
+	// The parse is the platform's: a setting it would refuse fails here.
+	bad := strings.Replace(string(raw), `"BNBLOC_BROWSER_CHROME"`, `"PATH"`, 1)
+	if _, err := parsePublished([]byte(bad)); err == nil {
+		t.Fatal("a setting delivered as PATH was accepted")
+	}
+}
+
+// parsePublished parses package.json with the platform's own parser, which
+// validates it as the gateway does, with a stand-in for the artifacts a
+// publish adds.
+func parsePublished(raw []byte) (pkgmeta.Package, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return pkgmeta.Package{}, err
+	}
+	sum := strings.Repeat("0", 64)
+	doc["artifacts"] = map[string]any{"darwin-arm64": map[string]any{"url": "https://gateway.example.com/v1/artifacts/sha256/" + sum, "sha256": sum}}
+	full, _ := json.Marshal(doc)
+	return pkgmeta.ParsePackage(full)
 }
