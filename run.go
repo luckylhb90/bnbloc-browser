@@ -54,9 +54,6 @@ type runState struct {
 	Threshold float64 `json:"threshold"`
 	// Checkpoint is where the run waits ("" while it runs).
 	Checkpoint *checkpoint `json:"checkpoint,omitempty"`
-	// PausedAtSeq is the message sequence of the turn the run paused in,
-	// for a checkpoint only a newer turn of the requester may answer.
-	PausedAtSeq int64 `json:"pausedAtSeq,omitempty"`
 	// PausedJob is that turn's job: a needs_human pause keeps its live
 	// view under it after the turn (keep.go).
 	PausedJob string `json:"pausedJob,omitempty"`

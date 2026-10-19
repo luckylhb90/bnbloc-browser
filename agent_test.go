@@ -45,8 +45,10 @@ func TestAgentOpensFindsAndActs(t *testing.T) {
 	}
 }
 
-// A click the predicate judges irreversible waits for the requester's own
-// newer message: an agent's confirmed in the same turn changes nothing.
+// A click the predicate judges irreversible pauses; confirmed in a turn the
+// requester opened with their own message goes through, even with the
+// control renumbered or no pause before it ("submit all fifteen, don't ask
+// me"), while a turn a schedule or another agent opened cannot confirm.
 func TestIrreversibleClickWaitsForTheRequester(t *testing.T) {
 	p, _, done := expensePortal()
 	h := newHarness(t, p, func(q decReq) (string, string) { return "", "" })
@@ -57,14 +59,27 @@ func TestIrreversibleClickWaitsForTheRequester(t *testing.T) {
 	if head["checkpoint"] != cpNeedsConfirmation || countClicks(p, 3) != 0 {
 		t.Fatalf("click = %v (clicks %v)", head, p.clicks)
 	}
+	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11})
 	head, _ = h.call("browser_act", map[string]any{"run": run, "action": "click", "element": 3, "confirmed": true})
-	if !strings.Contains(head["note"].(string), "has not answered") || countClicks(p, 3) != 0 {
-		t.Fatalf("same-turn confirmed = %v", head)
+	if !strings.Contains(head["note"].(string), "own message") || countClicks(p, 3) != 0 {
+		t.Fatalf("confirmed in a turn maya did not open = %v", head)
 	}
-	h.relay.bind(component.RelaySession{JobID: "job-2", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 11, ByRequester: true})
+	h.relay.bind(component.RelaySession{JobID: "job-3", RoomID: "room-1", Requester: "maya", Owner: "maya", MessageSeq: 12, ByRequester: true})
 	head, _ = h.call("browser_act", map[string]any{"run": run, "action": "click", "element": 3, "confirmed": true})
 	if head["checkpoint"] != nil || p.doc != done {
-		t.Fatalf("confirmed by the requester = %v", head)
+		t.Fatalf("confirmed in maya's turn = %v", head)
+	}
+}
+
+// confirmed needs no pause first: the person's message already asked.
+func TestConfirmedClickNeedsNoPauseFirst(t *testing.T) {
+	p, _, done := expensePortal()
+	h := newHarness(t, p, func(q decReq) (string, string) { return "", "" })
+	h.model.predicate = 0.9
+	head, _ := h.call("browser_open", map[string]any{"url": "https://portal.example.com/expenses/new"})
+	head, _ = h.call("browser_act", map[string]any{"run": head["run"].(string), "action": "click", "element": 3, "confirmed": true})
+	if head["checkpoint"] != nil || p.doc != done {
+		t.Fatalf("confirmed click = %v", head)
 	}
 }
 

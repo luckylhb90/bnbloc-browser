@@ -114,15 +114,18 @@ func (t *tools) stop(ctx context.Context, id string) (any, *rpcError) {
 // defaultThreshold is the irreversibility pause (decided 2026-10-17).
 const defaultThreshold = 0.3
 
-// consentHolds is the §2.5 rule: a person's answer counts only in a turn
-// the run's requester opened with their own message after the pause.
-// It answers why not, "" when it holds.
+// consentHolds is the §2.5 rule (revised 2026-10-19): a confirmation counts
+// in a turn the run's requester opened with their own message, before or
+// after the pause, so a person who said "do all fifteen, don't ask me" is
+// not asked fifteen times; the agent confirms only what their words
+// cover. A turn a schedule or another agent opened never confirms, and a
+// page cannot open a turn. It answers why not, "" when it holds.
 func consentHolds(sess component.RelaySession, r *runState) string {
 	switch {
 	case sess.Requester != r.Requester:
 		return "still waiting: only " + r.Requester + " can agree to this"
-	case !sess.ByRequester || sess.MessageSeq <= r.PausedAtSeq:
-		return "still waiting: " + r.Requester + " has not answered since this paused. Ask them in the room; continue in the turn their answer opens"
+	case !sess.ByRequester:
+		return "still waiting: only " + r.Requester + "'s own message can agree to this, not a scheduled or delegated turn. Ask them in the room; go on in the turn their answer opens"
 	}
 	return ""
 }

@@ -62,7 +62,7 @@ var toolFind = map[string]any{
 var toolAct = map[string]any{
 	"name": "browser_act",
 	"description": "Do one thing on the run's page, then answer the page once it settled. action: click (element), type (element, text: replaces the field's text), select (element, option), press (key: Enter, Tab, Escape, ArrowDown…), scroll (direction: up or down), back, wait, upload (element, file: a path in your workspace). " +
-		"A click that may not be undone, leaving the run's sites, an upload or a question the page asks pauses at needs_confirmation: ask the person who asked you, and repeat the action with confirmed in the turn their answer opens. A sign-in pauses at needs_human: the person does it, then you go on. You never type passwords.",
+		"A click that may not be undone, leaving the run's sites, an upload or a question the page asks pauses at needs_confirmation: repeat the action with confirmed when the person's own message in this turn already asked for it (\"submit all fifteen, don't ask me\"), otherwise ask them first. A sign-in pauses at needs_human: the person does it, then you go on. You never type passwords.",
 	"inputSchema": map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -74,7 +74,7 @@ var toolAct = map[string]any{
 			"key":       map[string]any{"type": "string"},
 			"direction": map[string]any{"type": "string", "enum": []string{"up", "down"}},
 			"file":      map[string]any{"type": "string"},
-			"confirmed": map[string]any{"type": "boolean", "description": "Only after the person who asked you said yes in the room, in their own message."},
+			"confirmed": map[string]any{"type": "boolean", "description": "Only when the person who asked you said, in their own message in this turn, to do this (\"submit all fifteen, don't ask me\" covers each submit). Without it, ask them first."},
 		},
 		"required": []string{"run", "action"},
 	},
@@ -340,27 +340,22 @@ func (t *tools) act(ctx context.Context, args json.RawMessage) (any, *rpcError) 
 		return nil, toolFailure(err)
 	}
 	defer tb.detach(context.Background())
-	if in.Confirmed && r.Checkpoint != nil {
+	if in.Confirmed {
 		if why := consentHolds(sess, r); why != "" {
 			return t.result(ctx, r, tb, r.Checkpoint, why, false), nil
 		}
-		switch {
-		case r.Checkpoint.Dialog != "":
-			r.AcceptDialog, r.DialogText = r.Checkpoint.Dialog, in.Text
-		case r.Checkpoint.Kind == cpLeavingSite && r.Checkpoint.Site != "" && !contains(r.Sites, r.Checkpoint.Site):
-			r.Sites = append(r.Sites, r.Checkpoint.Site)
+		if cp := r.Checkpoint; cp != nil {
+			switch {
+			case cp.Dialog != "":
+				r.AcceptDialog, r.DialogText = cp.Dialog, in.Text
+			case cp.Kind == cpLeavingSite && cp.Site != "" && !contains(r.Sites, cp.Site):
+				r.Sites = append(r.Sites, cp.Site)
+			}
 		}
 	}
 	return t.step(ctx, r, tb, sess, func(_ *liveFeed, pg *page) (*checkpoint, string, error) {
 		return t.do(ctx, r, tb, sess, pg, in)
 	})
-}
-
-// confirmedFor reports whether the call confirms the pending step on node
-// of kind (the checkpoint the run waits at, its consent checked by act).
-func confirmedFor(r *runState, in actInput, kind string, node *int) bool {
-	cp := r.Checkpoint
-	return in.Confirmed && cp != nil && cp.Kind == kind && cp.Pending != nil && cp.Pending.Action.Node != nil && node != nil && *cp.Pending.Action.Node == *node
 }
 
 // do runs one action on pg: a checkpoint when it must wait, a note when it
@@ -388,21 +383,24 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 		if !ok {
 			return nil, noControl(in.Element, "to click"), nil
 		}
-		if a.Href != "" && !r.onSite(a.Href) && !confirmedFor(r, in, cpLeavingSite, a.Node) {
+		// confirmed (its consent checked by act) covers the action named,
+		// whether or not a pause came first: control numbers can change as
+		// the page redraws, and a person who asked for it needs no second ask.
+		if a.Href != "" && !r.onSite(a.Href) && !in.Confirmed {
 			return &checkpoint{Kind: cpLeavingSite, Element: elementOf(a), Site: siteOf(a.Href), Pending: pending(decision{Operation: opClick, Action: a}, pg),
 				Reason: "this click leads to " + siteOf(a.Href) + ", outside the run's sites; ask the person who asked you, then repeat it with confirmed"}, "", nil
 		}
-		if !confirmedFor(r, in, cpNeedsConfirmation, a.Node) {
+		if !in.Confirmed {
 			prob, err := t.runner.irreversible(ctx, r, tb, a)
 			if err != nil && !errors.Is(err, errDecisionsOff) {
 				return nil, "", err
 			}
 			if err == nil && prob >= r.Threshold {
 				return &checkpoint{Kind: cpNeedsConfirmation, Element: elementOf(a), Probability: prob, Pending: pending(decision{Operation: opClick, Action: a}, pg),
-					Reason: "this click may commit something that cannot be undone; ask the person who asked you, and repeat it with confirmed in the turn their answer opens"}, "", nil
+					Reason: "this click may commit something that cannot be undone. If the person's message in this turn already asked for it, repeat it with confirmed; otherwise ask them, and repeat it with confirmed in the turn their answer opens"}, "", nil
 			}
 		}
-		if confirmedFor(r, in, cpLeavingSite, a.Node) && !contains(r.Sites, siteOf(a.Href)) {
+		if in.Confirmed && a.Href != "" && !r.onSite(a.Href) && !contains(r.Sites, siteOf(a.Href)) {
 			r.Sites = append(r.Sites, siteOf(a.Href))
 		}
 		record(a, "")
@@ -463,7 +461,7 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 		if !ok {
 			return nil, noControl(in.Element, "to upload to"), nil
 		}
-		if !confirmedFor(r, in, cpUpload, a.Node) {
+		if !in.Confirmed {
 			return &checkpoint{Kind: cpUpload, Element: elementOf(a), Pending: pending(decision{Operation: opUpload, Action: a}, pg),
 				Reason: "uploading sends a file from the room to this site; ask the person who asked you which file and whether, then repeat it with confirmed"}, "", nil
 		}
@@ -546,7 +544,7 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 	}
 	r.Checkpoint = cp
 	if cp != nil {
-		r.PausedAtSeq, r.PausedJob = sess.MessageSeq, sess.JobID
+		r.PausedJob = sess.JobID
 		if pg, err := observe(ctx, tb); err == nil {
 			r.PausedURL = pg.URL
 		}
