@@ -102,3 +102,24 @@ func containsInt(xs []int, x int) bool {
 	}
 	return false
 }
+
+// An editing shortcut carries its command (a synthesized Cmd+C alone copies
+// nothing on macOS); plain keys and releases carry none.
+func TestKeyEventEditCommands(t *testing.T) {
+	for _, c := range []struct {
+		in   component.LiveInput
+		want string
+	}{
+		{component.LiveInput{Type: component.LiveInputKey, Action: "down", Key: "c", Code: "KeyC", Modifiers: 4}, "copy"},
+		{component.LiveInput{Type: component.LiveInputKey, Action: "down", Key: "x", Code: "KeyX", Modifiers: 2}, "cut"},
+		{component.LiveInput{Type: component.LiveInputKey, Action: "down", Key: "z", Code: "KeyZ", Modifiers: 4 | 8}, "redo"},
+		{component.LiveInput{Type: component.LiveInputKey, Action: "down", Key: "c", Code: "KeyC"}, ""},
+		{component.LiveInput{Type: component.LiveInputKey, Action: "up", Key: "c", Code: "KeyC", Modifiers: 4}, ""},
+	} {
+		ev := keyEvent(c.in)
+		got, _ := ev["commands"].([]string)
+		if (c.want == "" && got != nil) || (c.want != "" && (len(got) != 1 || got[0] != c.want)) {
+			t.Fatalf("%+v: commands = %v, want %q", c.in, got, c.want)
+		}
+	}
+}

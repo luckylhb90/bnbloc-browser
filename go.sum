@@ -1,6 +1,6 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
-github.com/luckylhb90/bnbloc v0.1.1-0.20261018150925-30e1987c6324 h1:ydCTf5a5Scy/m8+Be4PWgS8f+VDgCWdaEWQCMugCSm0=
-github.com/luckylhb90/bnbloc v0.1.1-0.20261018150925-30e1987c6324/go.mod h1:B2OrRTYPq/+ipaoiV3LthCyJfc5k7LaDB/kI/w952hY=
+github.com/luckylhb90/bnbloc v0.1.1-0.20261019010439-3bd6c9ef741e h1:QN0rAxJTjDQjQbwMNb/ie3h94m91gv+MIpAbbcexo+s=
+github.com/luckylhb90/bnbloc v0.1.1-0.20261019010439-3bd6c9ef741e/go.mod h1:B2OrRTYPq/+ipaoiV3LthCyJfc5k7LaDB/kI/w952hY=
 golang.org/x/net v0.47.0 h1:Mx+4dIFzqraBXUugkia1OOvlD6LemFo1ALMHjrXDOhY=
 golang.org/x/net v0.47.0/go.mod h1:/jNxtkgq5yWUGYkaZGqo27cfGZ1c5Nen03aYrrKpVRU=

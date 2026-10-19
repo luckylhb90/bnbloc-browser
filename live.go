@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,8 +28,11 @@ import (
 const (
 	liveWatchedEvery = 250 * time.Millisecond
 	liveIdleEvery    = 2 * time.Second
-	liveQuality      = 55
-	liveCaptureFor   = 2 * time.Second
+	// liveAfterInput is how soon the page is looked at again after the
+	// controller's input ran: what they did shows at once.
+	liveAfterInput = 60 * time.Millisecond
+	liveQuality    = 50
+	liveCaptureFor = 2 * time.Second
 )
 
 // liveFeed is one call's live view, or a paused run's that a keeper holds
@@ -175,9 +179,13 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	// it only while posts go on.
 	keep := f.waiting != "" && time.Since(f.posted) >= component.LiveKeepEverySec*time.Second/2
 	f.mu.Unlock()
-	if post.Data == "" && f.holder() == "" && !keep && !readyChanged {
+	controlled := f.holder() != ""
+	if post.Data == "" && !controlled && !keep && !readyChanged {
 		return f.pace(), true
 	}
+	// Nothing new to show while someone drives: wait for their input
+	// instead of asking again and again (realtime answers as it arrives).
+	post.WaitInput = post.Data == "" && controlled
 	reply, err := f.gw.liveFrame(ctx, f.job, post)
 	var re *relayError
 	switch {
@@ -193,6 +201,12 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	f.controller, f.watched, f.posted = reply.Controller, reply.Watching, time.Now()
 	f.mu.Unlock()
 	f.apply(ctx, reply.Input)
+	if len(reply.Input) > 0 {
+		return liveAfterInput, true
+	}
+	if post.WaitInput {
+		return 0, true // the post already waited
+	}
 	return f.pace(), true
 }
 
@@ -262,6 +276,9 @@ type liveFramePost struct {
 	Waiting  string `json:"waiting,omitempty"`
 	Ready    bool   `json:"ready,omitempty"`
 	End      bool   `json:"end,omitempty"`
+	// WaitInput: an empty post that waits a moment for the controller's
+	// input (component.LiveFramePost.WaitInput).
+	WaitInput bool `json:"waitInput,omitempty"`
 }
 
 // liveFrame posts one frame (or an empty post) through the relay, under
@@ -333,10 +350,24 @@ func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput) {
 
 // keyEvent is a key's CDP event. A printable key sends its text on press
 // (that types it); the named keys carry the virtual key code Chrome acts on.
+// An editing shortcut (Cmd or Ctrl with C, X, A, Z) carries its editing
+// command: a synthesized key alone does not run it on macOS, so copy would
+// do nothing. Copy writes the clipboard of the machine the browser runs on:
+// the owner's, who is the only one who controls the view, so a copy in the
+// room lands where they paste.
 func keyEvent(e component.LiveInput) map[string]any {
 	ev := map[string]any{"key": e.Key, "code": e.Code, "modifiers": e.Modifiers}
 	if vk, ok := virtualKeys[e.Key]; ok {
 		ev["windowsVirtualKeyCode"], ev["nativeVirtualKeyCode"] = vk, vk
+	}
+	if cmd, ok := editCommands[strings.ToLower(e.Key)]; ok && e.Modifiers&(2|4) != 0 && e.Action != "up" {
+		if e.Modifiers&8 != 0 && cmd == "undo" {
+			cmd = "redo"
+		}
+		ev["commands"] = []string{cmd}
+		if vk := int(strings.ToUpper(e.Key)[0]); vk >= 'A' && vk <= 'Z' {
+			ev["windowsVirtualKeyCode"], ev["nativeVirtualKeyCode"] = vk, vk
+		}
 	}
 	switch {
 	case e.Action == "up":
@@ -348,6 +379,9 @@ func keyEvent(e component.LiveInput) map[string]any {
 	}
 	return ev
 }
+
+// editCommands are the editing shortcuts' commands (Chrome's names).
+var editCommands = map[string]string{"c": "copy", "x": "cut", "a": "selectAll", "z": "undo"}
 
 var virtualKeys = map[string]int{
 	"Backspace": 8, "Tab": 9, "Enter": 13, "Escape": 27, " ": 32,
