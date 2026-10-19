@@ -206,6 +206,11 @@ type browserHost interface {
 	attach(ctx context.Context, id string) (tabHandle, error)
 	// close closes a run's tab by id (errTabGone when it is gone).
 	close(ctx context.Context, id string) error
+	// url is a run's tab's address, and forward brings its window to the
+	// front: both from the browser, never attached to the page (a keeper
+	// that let go of it, keep.go).
+	url(ctx context.Context, id string) (string, error)
+	forward(ctx context.Context, id string) error
 	// finishedDownloads moves the run's finished downloads into dir and
 	// answers their dir-relative names.
 	finishedDownloads(tabID, dir string) []string
@@ -253,6 +258,38 @@ func (h *localHost) close(ctx context.Context, targetID string) error {
 		return err
 	}
 	return nil
+}
+
+// url answers a tab's address from the browser (errTabGone when it is
+// gone).
+func (h *localHost) url(ctx context.Context, targetID string) (string, error) {
+	c, err := h.connect(ctx)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		TargetInfo struct {
+			URL string `json:"url"`
+		} `json:"targetInfo"`
+	}
+	if err := c.call(ctx, "", "Target.getTargetInfo", map[string]any{"targetId": targetID}, &out); err != nil {
+		var ce *cdpError
+		if errors.As(err, &ce) {
+			return "", errTabGone
+		}
+		return "", err
+	}
+	return out.TargetInfo.URL, nil
+}
+
+// forward brings a tab's window to the front and selects the tab, from the
+// browser.
+func (h *localHost) forward(ctx context.Context, targetID string) error {
+	c, err := h.connect(ctx)
+	if err != nil {
+		return err
+	}
+	return (&tab{conn: c, targetID: targetID}).bringForward(ctx)
 }
 
 // readEndpoint reads a launcher's endpoint file.

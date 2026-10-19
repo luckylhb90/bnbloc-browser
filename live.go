@@ -63,8 +63,18 @@ type liveFeed struct {
 	isReady    bool
 	// closed: the owner closed the view from the room (LiveInputClose).
 	closed bool
+	// crashed: the page crashed, as the last post said.
+	crashed bool
 	// dialog is the page's open dialog the last post carried.
 	dialog *component.LiveDialog
+	// handsOff marks a feed let go of its page while the person works in
+	// the browser window itself (keep.go); onFocus, when set, is what the
+	// owner's "open on this computer" does; reattach asks for the page
+	// again (input from the room while hands off).
+	handsOff     bool
+	onFocus      func(ctx context.Context)
+	reattach     bool
+	wantHandsOff bool
 	// refused is the last refusal of a post (the keeper logs it).
 	refusedBy string
 
@@ -99,6 +109,31 @@ func startLive(gw *relay, tb tabHandle, run string) *liveFeed {
 // sequence than an earlier one.
 func newFeed(gw *relay, tb tabHandle, run string) *liveFeed {
 	return &liveFeed{gw: gw, tab: tb, run: run, seq: time.Now().UnixMilli(), poke: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
+}
+
+// page is the feed's tab (nil while hands off).
+func (f *liveFeed) page() tabHandle {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tab
+}
+
+// setPage sets the feed's tab (nil: hands off).
+func (f *liveFeed) setPage(t tabHandle) {
+	f.mu.Lock()
+	f.tab, f.handsOff = t, t == nil
+	f.mu.Unlock()
+}
+
+// requests answers, and clears, what the owner asked of a keeper's feed:
+// to let go of the page (they work in the browser window) or to take it
+// back (they act in the room's view).
+func (f *liveFeed) requests() (handsOff, reattach bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	handsOff, reattach = f.wantHandsOff, f.reattach
+	f.wantHandsOff, f.reattach = false, false
+	return handsOff, reattach
 }
 
 // end stops the feed and waits for it.
@@ -162,17 +197,26 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	// A page that waits on its dialog draws nothing new: the view keeps
 	// its last picture and carries the dialog, which the controller
 	// answers (dialog.go).
-	dialog := dialogOf(f.tab)
+	// A crashed page, or one let go of (hands off), draws nothing new
+	// either: the last picture stays, and the post says why.
+	t := f.page()
+	var dialog *component.LiveDialog
+	crashed := false
+	if t != nil {
+		dialog, crashed = dialogOf(t), crashedOf(t)
+	}
 	var shot string
 	var view viewport
 	err := errDialogOpen
-	if dialog == nil {
+	if t != nil && dialog == nil && !crashed {
 		cctx, cancel := context.WithTimeout(ctx, liveCaptureFor)
-		shot, view, err = capture(cctx, f.tab, liveQuality)
+		shot, view, err = capture(cctx, t, liveQuality)
 		cancel()
 	}
 	f.mu.Lock()
-	post := liveFramePost{Run: f.run, Waiting: f.waiting, Dialog: dialog}
+	post := liveFramePost{Run: f.run, Waiting: f.waiting, Dialog: dialog, Crashed: crashed}
+	crashChanged := crashed != f.crashed
+	f.crashed = crashed
 	dialogChanged := !sameDialog(dialog, f.dialog)
 	f.dialog = dialog
 	f.mu.Unlock()
@@ -204,7 +248,7 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 	// it only while posts go on.
 	keep := f.waiting != "" && time.Since(f.posted) >= component.LiveKeepEverySec*time.Second/2
 	f.mu.Unlock()
-	if post.Data == "" && !keep && !readyChanged && !dialogChanged {
+	if post.Data == "" && !keep && !readyChanged && !dialogChanged && !crashChanged {
 		return f.pace(), true
 	}
 	// While someone drives, their input is the input loop's (inputs): a
@@ -253,7 +297,7 @@ func (f *liveFeed) inputs() {
 	for ctx.Err() == nil {
 		controlled := f.holder() != ""
 		f.mu.Lock()
-		post := liveFramePost{Run: f.run, Waiting: f.waiting, Ready: f.isReady, WaitInput: controlled, Dialog: f.dialog}
+		post := liveFramePost{Run: f.run, Waiting: f.waiting, Ready: f.isReady, WaitInput: controlled, Dialog: f.dialog, Crashed: f.crashed}
 		f.mu.Unlock()
 		pctx, pcancel := context.WithTimeout(ctx, liveInputPostFor)
 		reply, err := f.gw.liveFrame(pctx, f.job, post)
@@ -355,6 +399,8 @@ type liveFramePost struct {
 	// LeaveInput: the post takes none of the queued input (the input
 	// loop's; component.LiveFramePost.LeaveInput).
 	LeaveInput bool `json:"leaveInput,omitempty"`
+	// Crashed: the page crashed (component.LiveFramePost.Crashed).
+	Crashed bool `json:"crashed,omitempty"`
 	// Dialog is the page's open dialog (component.LiveFramePost.Dialog).
 	Dialog *component.LiveDialog `json:"dialog,omitempty"`
 }
@@ -395,9 +441,24 @@ func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput, carried 
 		return
 	}
 	f.mu.Lock()
-	view := f.view
+	view, t, handsOff := f.view, f.tab, f.handsOff
 	f.mu.Unlock()
 	for _, e := range in {
+		// Hands off, the page is the person's in the browser window: what
+		// they do in the room's view asks for it back (the next look
+		// attaches again) and runs from then on.
+		if handsOff {
+			switch e.Type {
+			case component.LiveInputMouse, component.LiveInputWheel, component.LiveInputKey, component.LiveInputText, component.LiveInputReload:
+				f.mu.Lock()
+				f.reattach = true
+				f.mu.Unlock()
+				continue
+			}
+		}
+		if t == nil && e.Type != component.LiveInputFocus && e.Type != component.LiveInputClose {
+			continue
+		}
 		x, y := e.X*view.W, e.Y*view.H
 		switch e.Type {
 		case component.LiveInputMouse:
@@ -416,23 +477,31 @@ func (f *liveFeed) apply(ctx context.Context, in []component.LiveInput, carried 
 			if clicks == 0 && kind != "mouseMoved" {
 				clicks = 1
 			}
-			_ = f.tab.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": kind, "x": x, "y": y, "button": button, "clickCount": clicks, "modifiers": e.Modifiers}, nil)
+			_ = t.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": kind, "x": x, "y": y, "button": button, "clickCount": clicks, "modifiers": e.Modifiers}, nil)
 		case component.LiveInputWheel:
-			_ = f.tab.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": "mouseWheel", "x": x, "y": y, "deltaX": e.DeltaX, "deltaY": e.DeltaY, "modifiers": e.Modifiers}, nil)
+			_ = t.call(ctx, "Input.dispatchMouseEvent", map[string]any{"type": "mouseWheel", "x": x, "y": y, "deltaX": e.DeltaX, "deltaY": e.DeltaY, "modifiers": e.Modifiers}, nil)
 		case component.LiveInputKey:
-			_ = f.tab.call(ctx, "Input.dispatchKeyEvent", keyEvent(e), nil)
+			_ = t.call(ctx, "Input.dispatchKeyEvent", keyEvent(e), nil)
 		case component.LiveInputText:
 			if e.Text != "" {
-				_ = f.tab.call(ctx, "Input.insertText", map[string]any{"text": e.Text}, nil)
+				_ = t.call(ctx, "Input.insertText", map[string]any{"text": e.Text}, nil)
 			}
 		case component.LiveInputFocus:
-			f.bringForward(ctx)
+			if f.onFocus != nil {
+				f.onFocus(ctx)
+			} else {
+				f.bringForward(ctx)
+			}
+		case component.LiveInputReload:
+			if cp, ok := t.(crashPage); ok {
+				_ = cp.reload(ctx)
+			}
 		case component.LiveInputClose:
 			f.mu.Lock()
 			f.closed = true
 			f.mu.Unlock()
 		case component.LiveInputDialog:
-			if dp, ok := f.tab.(dialogPage); ok && carried != nil && sameDialog(dp.openDialog(), carried) {
+			if dp, ok := t.(dialogPage); ok && carried != nil && sameDialog(dp.openDialog(), carried) {
 				_ = dp.answerDialog(ctx, e.Action == "accept", e.Text)
 				carried = nil // one answer per dialog
 			}
@@ -484,7 +553,7 @@ var virtualKeys = map[string]int{
 // bringForward shows the run's window in front of the member's others
 // (restored if minimized), with the run's tab selected.
 func (f *liveFeed) bringForward(ctx context.Context) {
-	h, ok := f.tab.(interface{ bringForward(context.Context) error })
+	h, ok := f.page().(interface{ bringForward(context.Context) error })
 	if ok {
 		_ = h.bringForward(ctx)
 	}

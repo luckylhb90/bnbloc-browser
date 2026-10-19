@@ -30,8 +30,10 @@ type cdpConn struct {
 	events chan cdpEvent
 	closed chan struct{}
 	err    error
-	// dialogs is each session's open dialog (dialog.go).
+	// dialogs is each session's open dialog (dialog.go); crashed the
+	// sessions whose page crashed (crash.go).
 	dialogs map[string]*dialogState
+	crashed map[string]bool
 }
 
 type cdpReply struct {
@@ -135,6 +137,7 @@ func (c *cdpConn) read() {
 			continue
 		}
 		c.noteDialog(m.SessionID, m.Method, m.Params)
+		c.noteCrash(m.SessionID, m.Method)
 		select {
 		case c.events <- cdpEvent{Method: m.Method, Session: m.SessionID, Params: m.Params}:
 		default: // nobody is reading: the run polls what it needs
@@ -145,6 +148,9 @@ func (c *cdpConn) read() {
 // call sends one method (session "" = the browser) and waits for its
 // answer; out, when set, receives the result.
 func (c *cdpConn) call(ctx context.Context, session, method string, params any, out any) error {
+	if err := c.crashGate(session, method); err != nil {
+		return err
+	}
 	opened, err := c.dialogGate(session, method)
 	if err != nil {
 		return err
@@ -283,9 +289,9 @@ func attachTab(ctx context.Context, c *cdpConn, targetID string) (*tab, error) {
 		return nil, fmt.Errorf("attach to the tab: %w", err)
 	}
 	t := &tab{conn: c, targetID: targetID, session: att.SessionID}
-	// Keep animation frames and menus rendering while the tab is not the
-	// window's active one.
-	_ = t.call(ctx, "Emulation.setFocusEmulationEnabled", map[string]any{"enabled": true}, nil)
+	// The page's crash is reported (crash.go); no focus emulation: no
+	// more of the browser is changed than the run needs.
+	_ = t.call(ctx, "Inspector.enable", nil, nil)
 	_ = t.call(ctx, "Page.enable", nil, nil)
 	return t, nil
 }

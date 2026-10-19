@@ -6,5 +6,7 @@ github.com/luckylhb90/bnbloc v0.1.1-0.20261019025648-23b1b2f5adcf h1:ad1JPWvULhk
 github.com/luckylhb90/bnbloc v0.1.1-0.20261019025648-23b1b2f5adcf/go.mod h1:B2OrRTYPq/+ipaoiV3LthCyJfc5k7LaDB/kI/w952hY=
 github.com/luckylhb90/bnbloc v0.1.1-0.20261019055228-4e807cbfc3b0 h1:4lqJA2hkQE5RJ9dIlKtsuSvw76QcQUWIoBfpdcZ01RI=
 github.com/luckylhb90/bnbloc v0.1.1-0.20261019055228-4e807cbfc3b0/go.mod h1:B2OrRTYPq/+ipaoiV3LthCyJfc5k7LaDB/kI/w952hY=
+github.com/luckylhb90/bnbloc v0.1.1-0.20261019075932-bd1cb7d00bdd h1:jXKf8LrCAmEPE5fUB3wtgswbHCalEBk8hw7hk6ASBBo=
+github.com/luckylhb90/bnbloc v0.1.1-0.20261019075932-bd1cb7d00bdd/go.mod h1:B2OrRTYPq/+ipaoiV3LthCyJfc5k7LaDB/kI/w952hY=
 golang.org/x/net v0.47.0 h1:Mx+4dIFzqraBXUugkia1OOvlD6LemFo1ALMHjrXDOhY=
 golang.org/x/net v0.47.0/go.mod h1:/jNxtkgq5yWUGYkaZGqo27cfGZ1c5Nen03aYrrKpVRU=

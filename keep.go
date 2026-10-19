@@ -40,6 +40,14 @@ const keepFailures = 3
 // keepPostFor bounds one look and post of the keeper.
 const keepPostFor = 20 * time.Second
 
+// handsOffLook is how often a keeper that let go of the page looks at its
+// address.
+const handsOffLook = time.Second
+
+// handsOffWaiting is what a view waits for while the person works in the
+// browser window itself.
+const handsOffWaiting = "Doing it in the browser window on the computer; let the agent continue when it is done"
+
 func (s runStore) keepLock(id string) string { return s.path(id) + ".keep.lock" }
 
 // jobKeeper names the file that says which run's keeper holds a job's view.
@@ -130,14 +138,32 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		end()
 		return err
 	}
-	defer tb.detach(context.Background())
-	// Nobody could answer a dialog this keeper leaves open (dialog.go).
-	defer dismissDialog(context.Background(), tb)
 	f := newFeed(gw, tb, r.ID)
+	// The page the keeper holds at its end is let go of, a dialog of ours
+	// on it answered first: nobody could answer it after (dialog.go).
+	defer func() {
+		if t := f.page(); t != nil {
+			dismissDialog(context.Background(), t)
+			t.detach(context.Background())
+		}
+	}()
 	f.job, f.waiting = job, r.Checkpoint.Waiting
+	waiting := f.waiting
 	f.ready = func(ctx context.Context) bool {
-		pg, err := observe(ctx, tb)
+		t := f.page()
+		if t == nil {
+			return false
+		}
+		pg, err := observe(ctx, t)
 		return err == nil && r.movedOn(pg)
+	}
+	// "Open on this computer": the window comes forward, and the keeper
+	// lets go of the page while the person works there (below).
+	f.onFocus = func(ctx context.Context) {
+		_ = host.forward(ctx, r.Tab)
+		f.mu.Lock()
+		f.wantHandsOff = true
+		f.mu.Unlock()
 	}
 	// The owner's input runs as it arrives (inputs), beside the frames.
 	go f.inputs()
@@ -154,11 +180,69 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 			end()
 			return nil
 		}
+		// Hands off (QA 2026-10-19: sign-in pages crashed while this
+		// component was attached to them, and went through once nothing
+		// was): while the person works in the browser window, nothing of
+		// this component is on the page. The view keeps its last picture,
+		// the address says when it looks done, and the person's next
+		// action in the room's view takes the page back.
+		goOff, comeBack := f.requests()
+		if t := f.page(); t != nil && goOff && dialogOf(t) == nil {
+			t.detach(ctx)
+			f.setPage(nil)
+			f.mu.Lock()
+			f.waiting, f.posted = handsOffWaiting, time.Time{}
+			f.mu.Unlock()
+			logKeep("hands off: the person works in the browser window")
+		}
+		if f.page() == nil {
+			if comeBack {
+				nt, err := host.attach(ctx, r.Tab)
+				if errors.Is(err, errTabGone) {
+					end()
+					return errTabGone
+				}
+				if err == nil {
+					f.setPage(nt)
+					f.mu.Lock()
+					f.waiting, f.posted = waiting, time.Time{}
+					f.mu.Unlock()
+					logKeep("the room's view took the page back")
+					continue
+				}
+			}
+			tctx, cancel := context.WithTimeout(ctx, keepPostFor)
+			u, err := host.url(tctx, r.Tab)
+			if errors.Is(err, errTabGone) {
+				cancel()
+				end()
+				return errTabGone
+			}
+			if err == nil {
+				f.mu.Lock()
+				if ready := r.movedOnURL(u); ready != f.isReady {
+					f.isReady, f.posted = ready, time.Time{}
+				}
+				f.mu.Unlock()
+			}
+			every, ok := f.tick(tctx, &last)
+			cancel()
+			if !ok {
+				logKeep("ended: the relay refuses the view (%s)", f.refusal())
+				return nil
+			}
+			if !waitStop(ctx, store, runID, min(every, handsOffLook), f.poke) {
+				end()
+				return ctx.Err()
+			}
+			continue
+		}
+		tb := f.page()
 		tctx, cancel := context.WithTimeout(ctx, keepPostFor)
 		var state string
 		switch err := evaluate(tctx, tb, "document.readyState", &state); {
-		case err == nil, errors.Is(err, errDialogOpen):
-			failures = 0 // a page waiting on its dialog answers by the dialog
+		case err == nil, errors.Is(err, errDialogOpen), errors.Is(err, errTabCrashed):
+			failures = 0 // a dialog or a crash is reported as such
 		default:
 			failures++
 		}
@@ -239,5 +323,11 @@ func (f *liveFeed) isClosed() bool {
 // back on one of the run's sites, off the page it paused on, with no secret
 // field left. The room then offers the person to let the agent continue.
 func (r *runState) movedOn(pg *page) bool {
-	return pg.URL != r.PausedURL && siteOf(pg.URL) != "" && r.onSite(pg.URL) && !hasSecret(pg)
+	return r.movedOnURL(pg.URL) && !hasSecret(pg)
+}
+
+// movedOnURL is movedOn by the address alone (a keeper that let go of the
+// page sees nothing more).
+func (r *runState) movedOnURL(u string) bool {
+	return u != r.PausedURL && siteOf(u) != "" && r.onSite(u)
 }

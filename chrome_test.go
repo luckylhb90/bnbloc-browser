@@ -35,7 +35,14 @@ func startTestChrome(t *testing.T) *cdpConn {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd, url, err := startChrome(ctx, hostConfig{Profile: t.TempDir(), Headless: true, Chrome: os.Getenv("BNBLOC_BROWSER_CHROME")}, false)
+	// Not t.TempDir: the browser's helpers may still write its profile
+	// when the test's own cleanup runs.
+	profile, err := os.MkdirTemp("", "bnbloc-browser-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { time.Sleep(500 * time.Millisecond); _ = os.RemoveAll(profile) })
+	cmd, url, err := startChrome(ctx, hostConfig{Profile: profile, Headless: true, Chrome: os.Getenv("BNBLOC_BROWSER_CHROME")}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

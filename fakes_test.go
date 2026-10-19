@@ -70,6 +70,26 @@ type fakePage struct {
 	dialog   *component.LiveDialog
 	onAnswer func(p *fakePage, accept bool, text string)
 	answers  []bool
+	// crashed: the page crashed (every call but a reload refused, as on
+	// Chrome after Inspector.targetCrashed); reloads counts the reloads;
+	// calls counts every call the page answered.
+	crashed bool
+	reloads int
+	calls   int
+}
+
+func (p *fakePage) isCrashed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.crashed
+}
+
+func (p *fakePage) reload(context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.crashed = false
+	p.reloads++
+	return nil
 }
 
 func (p *fakePage) openDialog() *component.LiveDialog {
@@ -115,9 +135,13 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 	if p.hung && (method == "Runtime.evaluate" || method == "Page.captureScreenshot") {
 		return errors.New("the page does not answer")
 	}
+	if p.crashed {
+		return errTabCrashed
+	}
 	if p.dialog != nil {
 		return errDialogOpen
 	}
+	p.calls++
 	switch method {
 	case "Runtime.evaluate":
 		expr, _ := m["expression"].(string)
@@ -245,7 +269,9 @@ type fakeHost struct {
 	pages  map[string]*fakePage
 	next   *fakePage // the page the next opened tab shows
 	opened int
-	dl     map[string][]string
+	// forwarded are the tabs whose window was brought forward.
+	forwarded []string
+	dl        map[string][]string
 }
 
 func (h *fakeHost) open(context.Context) (tabHandle, error) {
@@ -277,6 +303,25 @@ func (h *fakeHost) close(_ context.Context, id string) error {
 		return errTabGone
 	}
 	delete(h.pages, id)
+	return nil
+}
+
+func (h *fakeHost) url(_ context.Context, id string) (string, error) {
+	h.mu.Lock()
+	p, ok := h.pages[id]
+	h.mu.Unlock()
+	if !ok {
+		return "", errTabGone
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.doc.url, nil
+}
+
+func (h *fakeHost) forward(_ context.Context, id string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.forwarded = append(h.forwarded, id)
 	return nil
 }
 

@@ -265,6 +265,7 @@ var errDecisionsOff = errors.New("decisions are off here: the deployment has no 
 // budget, or the context's end. p is the run's tab.
 func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkpoint, error) {
 	deadline := rn.now().Add(rn.budget)
+	reloaded := false
 	for {
 		if rn.now().After(deadline) {
 			if who := rn.holder(); who != "" {
@@ -287,6 +288,21 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 		if dl := rn.collectDownloads(r); dl != nil {
 			return dl, nil
 		}
+		if crashedOf(p) {
+			// The page crashed in the browser (crash.go): reloaded once;
+			// a page that crashes again stops the run with that reason.
+			if reloaded {
+				return &checkpoint{Kind: cpBlocked, Reason: "the page keeps crashing in the browser; the person can open it in the browser window on their computer, then resume the run"}, nil
+			}
+			reloaded = true
+			if err := p.(crashPage).reload(ctx); err != nil {
+				return nil, err
+			}
+			if err := sleepCtx(ctx, time.Second); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if d := dialogOf(p); d != nil {
 			if cp := rn.answerDialog(ctx, r, p, d); cp != nil {
 				return cp, nil
@@ -294,7 +310,7 @@ func (rn *runner) loop(ctx context.Context, r *runState, p browserPage) (*checkp
 			continue
 		}
 		pg, err := observe(ctx, p)
-		if errors.Is(err, errDialogOpen) {
+		if errors.Is(err, errDialogOpen) || errors.Is(err, errTabCrashed) {
 			continue // answered above, next time round
 		}
 		if err != nil {
