@@ -15,9 +15,10 @@ import (
 // the page after it, are written to browser-runs/<run>.html in the agent's
 // workspace, which the bridge publishes as a room file like any other the
 // agent made. A sign-in is never pictured; frames are kept newest first
-// within the room's inline size. A run's GIF guide (gif.go) is named on it:
-// the room runs the page sandboxed, with no downloads and no way to the
-// room's other files, so the page says where the GIF is.
+// within the room's inline size. A run's GIF guide (gif.go) is linked from
+// it: the room runs the page sandboxed, with no downloads, and opens the
+// room file a relative link names in its own tab, where the member
+// downloads it.
 
 const (
 	// replayDir is the workspace directory replays are written to.
@@ -139,6 +140,7 @@ const replayPage = `<!doctype html>
 body{margin:0;font:14px system-ui,sans-serif;background:#111;color:#eee;display:flex;flex-direction:column;height:100vh}
 header{padding:6px 10px;border-bottom:1px solid #333;display:flex;gap:6px;align-items:center;min-width:0}
 header strong{white-space:nowrap}
+header .gif{color:#8ab4f8;white-space:nowrap}
 header .meta{color:#999;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button{background:#2a2a2a;color:#eee;border:1px solid #444;border-radius:6px;padding:4px 10px;cursor:pointer;flex-shrink:0}
 #steps{display:none}
@@ -162,7 +164,7 @@ li .at{color:#888;font-size:12px;margin-right:6px}
   body.list ol{display:block}
 }
 </style></head><body>
-<header><strong>Browser run replay</strong><span class="meta" id="meta"></span><span class="meta" id="gif" hidden></span>
+<header><strong>Browser run replay</strong><span class="meta" id="meta"></span><a class="gif" id="gif" hidden>GIF guide</a>
 <button id="steps">Steps</button><button id="prev">&#9664;</button><button id="play">Play</button><button id="next">&#9654;</button></header>
 <main><div id="stage"><div id="shot"></div><div id="caption"><div id="what"></div><div class="url" id="url"></div></div></div><ol id="list"></ol></main>
 <script id="data" type="application/json">{{DATA}}</script>
@@ -170,7 +172,7 @@ li .at{color:#888;font-size:12px;margin-right:6px}
 const d=JSON.parse(document.getElementById('data').textContent), steps=d.steps;
 const $=id=>document.getElementById(id);
 $('meta').textContent=d.run+' · '+(d.sites||[]).join(', ')+(d.device?' · as a '+d.device:'')+' · '+d.started+' · '+steps.length+' steps';
-if(d.gif){$('gif').textContent='GIF guide: '+d.gif+' (in the room\'s files)';$('gif').hidden=false}
+if(d.gif){$('gif').setAttribute('href',d.gif);$('gif').hidden=false}
 let at=steps.length-1, timer=null;
 steps.forEach((s,i)=>{const li=document.createElement('li');const t=document.createElement('span');t.className='at';t.textContent=s.at;
   li.append(t,document.createTextNode(s.step+'. '+s.what));li.onclick=()=>{stop();show(i)};$('list').append(li)});

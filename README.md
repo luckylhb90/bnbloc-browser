@@ -38,8 +38,9 @@ Windows; Noto Sans CJK, WenQuanYi or DejaVu on Linux), each character in the
 first that has it, so Chinese and Vietnamese read as written, wrapped by
 width (between any two CJK characters too). On a machine with none of
 them, captions fall back to a 7×13 ASCII font where other characters read
-`...`. The replay names the GIF; it cannot link it, since the room runs the
-replay sandboxed, without downloads or a path to the room's other files.
+`...`. The replay links the GIF: the room runs the replay sandboxed, without
+downloads, and opens the room file a relative link names in its own tab,
+where it can be downloaded.
 
 Nothing to configure: the room is the credential (`mcp.credentials: "room"`).
 Each call reaches the gateway through the bridge's room relay, as the person
