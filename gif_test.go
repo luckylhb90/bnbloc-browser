@@ -37,6 +37,20 @@ func pictureJPEG(t *testing.T, w, h int, c color.RGBA, noisy bool) string {
 	return base64.StdEncoding.EncodeToString(out.Bytes())
 }
 
+// lit counts the light pixels of img in r (a caption's text on its dark
+// bar).
+func lit(img image.Image, r image.Rectangle) int {
+	n := 0
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			if cr, cg, cb, _ := img.At(x, y).RGBA(); cr>>8 > 150 && cg>>8 > 150 && cb>>8 > 150 {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // near reports whether a palette colour is about c.
 func near(got color.Color, c color.RGBA) bool {
 	r, g, b, _ := got.RGBA()
@@ -62,8 +76,8 @@ func TestGIFGuideShowsThePicturedSteps(t *testing.T) {
 		wantW, wantH int
 		bar          int
 	}{
-		{"phone", 390, 844, 390, 844 + 34, 34},
-		{"", 1024, 640, 800, 500 + 68, 68},
+		{"phone", 390, 844, 390, 844 + captions().barHeight(1), captions().barHeight(1)},
+		{"", 1024, 640, 800, 500 + captions().barHeight(2), captions().barHeight(2)},
 	} {
 		store := runStore{dir: t.TempDir()}
 		tl := &tools{runner: &runner{store: store}, workspace: t.TempDir()}
@@ -100,15 +114,7 @@ func TestGIFGuideShowsThePicturedSteps(t *testing.T) {
 			if px := g.Image[i].At(10, 10); !near(px, col) {
 				t.Fatalf("%s: frame %d shows %v; want %v", c.device, i, px, col)
 			}
-			text := 0
-			for y := c.wantH - c.bar; y < c.wantH; y++ {
-				for x := 0; x < 100; x++ {
-					if near(g.Image[i].At(x, y), gifText) {
-						text++
-					}
-				}
-			}
-			if text == 0 {
+			if lit(g.Image[i], image.Rect(0, c.wantH-c.bar, c.wantW, c.wantH)) == 0 {
 				t.Fatalf("%s: frame %d has no caption", c.device, i)
 			}
 		}
@@ -170,19 +176,6 @@ func TestThinned(t *testing.T) {
 		if strings.Join(got, ",") != want {
 			t.Fatalf("thinned(%d) = %v", n, got)
 		}
-	}
-}
-
-// A caption is the font's characters, wrapped at spaces on two lines.
-func TestCaptionText(t *testing.T) {
-	if got := asciiCaption("Clicked \"提交订单\"\nnow"); got != `Clicked "..." now` {
-		t.Fatalf("asciiCaption = %q", got)
-	}
-	if got := wrapCaption("Typed into Amount: 120.50", 20, 2); strings.Join(got, "|") != "Typed into Amount:|120.50" {
-		t.Fatalf("wrapCaption = %q", got)
-	}
-	if got := wrapCaption("one two three four five six", 9, 2); len(got) != 2 || !strings.HasSuffix(got[1], "...") || len(got[1]) > 9 {
-		t.Fatalf("wrapCaption past two lines = %q", got)
 	}
 }
 

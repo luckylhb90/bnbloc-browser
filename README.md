@@ -32,7 +32,12 @@ the device again.
 last 3 s) with its caption, at most 480 wide for a phone run and 800 for
 others, a median-cut palette per frame, at most 8 MB (it shrinks, then
 drops every other step). Sign-ins are never pictured, so never in it.
-Captions use a 7×13 ASCII font: other characters (a Chinese label) read
+Captions are drawn in the system's own fonts (PingFang, Hiragino Sans GB,
+STHeiti or Arial Unicode on macOS; Microsoft YaHei, SimSun or Segoe UI on
+Windows; Noto Sans CJK, WenQuanYi or DejaVu on Linux), each character in the
+first that has it, so Chinese and Vietnamese read as written, wrapped by
+width (between any two CJK characters too). On a machine with none of
+them, captions fall back to a 7×13 ASCII font where other characters read
 `...`. The replay names the GIF; it cannot link it, since the room runs the
 replay sandboxed, without downloads or a path to the room's other files.
 

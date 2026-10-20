@@ -14,11 +14,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
-
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
-	"golang.org/x/image/math/fixed"
 )
 
 // A run's GIF guide (browser_close gif): the run's pictures, step by step,
@@ -164,9 +159,9 @@ func encodeFrames(frames []gifFrame, w int) ([]byte, error) {
 	}
 	scale := 1
 	if w >= 640 {
-		scale = 2 // the caption font is 13 pixels high
+		scale = 2 // captions twice their size on a wide picture
 	}
-	bar := (2*captionPad + captionLines*basicfont.Face7x13.Height) * scale
+	bar := captions().barHeight(scale)
 	pics := make([]*image.RGBA, len(frames))
 	h := 0
 	for i, f := range frames {
@@ -179,7 +174,7 @@ func encodeFrames(frames []gifFrame, w int) ([]byte, error) {
 		canvas := image.NewRGBA(image.Rect(0, 0, w, h+bar))
 		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(gifBar), image.Point{}, draw.Src)
 		draw.Draw(canvas, pics[i].Bounds(), pics[i], image.Point{}, draw.Src)
-		drawCaption(canvas, image.Rect(0, h, w, h+bar), f.caption, scale)
+		captions().draw(canvas, image.Rect(0, h, w, h+bar), f.caption, scale)
 		g.Image = append(g.Image, quantize(canvas))
 		delay := gifStepDelay
 		if i == len(frames)-1 {
@@ -192,92 +187,6 @@ func encodeFrames(frames []gifFrame, w int) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
-}
-
-// A caption is at most captionLines lines, captionPad pixels from the
-// bar's edges (before its scale).
-const (
-	captionLines = 2
-	captionPad   = 4
-)
-
-// drawCaption writes caption into the bar at r, in basicfont's 7×13 face
-// drawn scale times its size.
-func drawCaption(dst *image.RGBA, r image.Rectangle, caption string, scale int) {
-	face := basicfont.Face7x13
-	strip := image.NewRGBA(image.Rect(0, 0, r.Dx()/scale, r.Dy()/scale))
-	draw.Draw(strip, strip.Bounds(), image.NewUniform(gifBar), image.Point{}, draw.Src)
-	d := font.Drawer{Dst: strip, Src: image.NewUniform(gifText), Face: face}
-	for i, line := range wrapCaption(asciiCaption(caption), (strip.Bounds().Dx()-2*captionPad)/face.Advance, captionLines) {
-		d.Dot = fixed.P(captionPad, captionPad+face.Ascent+i*face.Height)
-		d.DrawString(line)
-	}
-	for y := 0; y < r.Dy(); y++ {
-		for x := 0; x < r.Dx(); x++ {
-			dst.SetRGBA(r.Min.X+x, r.Min.Y+y, strip.RGBAAt(x/scale, y/scale))
-		}
-	}
-}
-
-// asciiCaption is s in the caption font's characters, printable ASCII: a
-// run of others (a label in Chinese, an emoji) reads "...", a line break
-// a space.
-func asciiCaption(s string) string {
-	var b strings.Builder
-	other := false
-	for _, c := range s {
-		switch {
-		case c == '\n' || c == '\t' || c == '\r':
-			b.WriteByte(' ')
-			other = false
-		case c >= 0x20 && c < 0x7f:
-			b.WriteRune(c)
-			other = false
-		case !other:
-			b.WriteString("...")
-			other = true
-		}
-	}
-	return b.String()
-}
-
-// wrapCaption breaks s into lines of at most per characters at spaces (a
-// longer word is cut), at most lines of them, the last ending "..." when
-// more did not fit.
-func wrapCaption(s string, per, lines int) []string {
-	if per < 4 {
-		return nil
-	}
-	var out []string
-	line := ""
-	for _, word := range strings.Fields(s) {
-		for len(word) > per {
-			if line != "" {
-				out, line = append(out, line), ""
-			}
-			out, word = append(out, word[:per]), word[per:]
-		}
-		switch {
-		case line == "":
-			line = word
-		case len(line)+1+len(word) <= per:
-			line += " " + word
-		default:
-			out, line = append(out, line), word
-		}
-	}
-	if line != "" {
-		out = append(out, line)
-	}
-	if len(out) > lines {
-		out = out[:lines]
-		last := out[lines-1]
-		if len(last) > per-3 {
-			last = last[:per-3]
-		}
-		out[lines-1] = last + "..."
-	}
-	return out
 }
 
 // quantize maps img to a palette of its own: the caption bar's two colours
