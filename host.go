@@ -366,40 +366,64 @@ func chromeArgs(cfg hostConfig) []string {
 	return append(args, "--no-startup-window")
 }
 
-// findChrome locates a Chrome or Chromium: the configured path, then the
-// platform's usual installs, then PATH.
+// chromiumApps are the Chromium-based browsers a run can drive (all speak
+// CDP), in the order they are tried: Chrome, Chromium, Edge, Brave. Each is
+// its macOS app, its Windows install under Program Files or the user's
+// local app data, and its Linux command names.
+var chromiumApps = []struct {
+	mac, windows string
+	linux        []string
+}{
+	{"Google Chrome.app/Contents/MacOS/Google Chrome", `Google\Chrome\Application\chrome.exe`, []string{"google-chrome", "google-chrome-stable", "chrome"}},
+	{"Chromium.app/Contents/MacOS/Chromium", `Chromium\Application\chrome.exe`, []string{"chromium", "chromium-browser"}},
+	{"Microsoft Edge.app/Contents/MacOS/Microsoft Edge", `Microsoft\Edge\Application\msedge.exe`, []string{"microsoft-edge", "microsoft-edge-stable"}},
+	{"Brave Browser.app/Contents/MacOS/Brave Browser", `BraveSoftware\Brave-Browser\Application\brave.exe`, []string{"brave-browser", "brave"}},
+}
+
+// findChrome locates the browser runs drive: the member's setting (the
+// component's "Chrome executable", on the Components page), else the first
+// Chromium-based browser installed (browserCandidates).
 func findChrome(configured string) (string, error) {
 	if configured != "" {
 		return configured, nil
 	}
-	var candidates []string
-	switch runtime.GOOS {
-	case "darwin":
-		candidates = []string{
-			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-			"/Applications/Chromium.app/Contents/MacOS/Chromium",
-		}
-		if home, err := os.UserHomeDir(); err == nil {
-			candidates = append(candidates, filepath.Join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
-		}
-	case "windows":
-		for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
-			if base := os.Getenv(env); base != "" {
-				candidates = append(candidates, filepath.Join(base, `Google\Chrome\Application\chrome.exe`))
-			}
-		}
-	}
-	for _, c := range candidates {
+	home, _ := os.UserHomeDir()
+	for _, c := range browserCandidates(runtime.GOOS, home, os.Getenv, exec.LookPath) {
 		if _, err := os.Stat(c); err == nil {
 			return c, nil
 		}
 	}
-	for _, name := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, nil
+	return "", errors.New("no Chrome, Chromium, Edge or Brave is installed on this computer: install one, or set the browser component's Chrome executable on the Components page")
+}
+
+// browserCandidates are the paths a Chromium-based browser may be at, in
+// chromiumApps' order: on macOS its app in /Applications or ~/Applications,
+// on Windows under Program Files or the user's local app data, elsewhere its
+// commands on PATH.
+func browserCandidates(goos, home string, getenv func(string) string, lookPath func(string) (string, error)) []string {
+	var out []string
+	for _, app := range chromiumApps {
+		switch goos {
+		case "darwin":
+			out = append(out, filepath.Join("/Applications", app.mac))
+			if home != "" {
+				out = append(out, filepath.Join(home, "Applications", app.mac))
+			}
+		case "windows":
+			for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+				if base := getenv(env); base != "" {
+					out = append(out, filepath.Join(base, app.windows))
+				}
+			}
+		default:
+			for _, name := range app.linux {
+				if p, err := lookPath(name); err == nil {
+					out = append(out, p)
+				}
+			}
 		}
 	}
-	return "", errors.New("no Chrome or Chromium is installed on this machine (set BNBLOC_BROWSER_CHROME to its path)")
+	return out
 }
 
 // startChrome starts the browser and waits for its DevTools endpoint.
