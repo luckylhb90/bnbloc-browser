@@ -47,7 +47,10 @@ in (a password field, or an address or title naming a sign-in) pauses the
 run at `needs_human`: a password at once, an identity provider's
 login-name page once it stayed 3 s (a single sign-on the person already has
 passes through by itself). The live view stays in the room for the person
-to sign in, and the agent goes on once they say so. A page that sends
+to sign in, and the agent goes on once they say so: `browser_view` (or
+`browser_find`, or an act) on a page past the sign-in ends the kept view
+and answers the page, while the sign-in page itself still answers the
+pause. A page that sends
 itself to the identity provider by script after it loaded (an expired
 session) is caught too: a step waits a moment after a page loaded, and
 while a navigation it began is on its way, before it takes the page as

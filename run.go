@@ -369,6 +369,15 @@ func (w *signInWatch) at(r *runState, pg *page, deadline time.Time) (*checkpoint
 	return nil, true
 }
 
+// pastSignIn reports whether a run paused for the person to sign in has
+// a page past it: no longer a sign-in by signInWatch's rule (the person
+// already had their time), and no secret field left to fill.
+func (r *runState) pastSignIn(pg *page) bool {
+	var w signInWatch
+	cp, _ := w.at(r, pg, time.Time{})
+	return cp == nil && !hasSecret(pg)
+}
+
 var signInWords = regexp.MustCompile(`(^|[^a-z])(login|log-in|signin|sign-in|sign_in|logon|sso|saml|oauth2?|oidc|openid|authorize|auth|idp|adfs|mfa|2fa|otp)([^a-z]|$)`)
 
 // hasSecret reports a password or other secret field on the page.

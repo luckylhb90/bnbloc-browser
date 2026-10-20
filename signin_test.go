@@ -152,6 +152,81 @@ func TestLateSignInRedirectOnChrome(t *testing.T) {
 		ls.handedOver(t, head, text)
 	})
 
+	t.Run("signed in", func(t *testing.T) {
+		ls := newLateSignIn(t, browser)
+		head, text := ls.h.call("browser_open", map[string]any{"url": ls.site + "/task"})
+		ls.handedOver(t, head, text)
+		run := head["run"].(string)
+		store, host := ls.h.tools.runner.store, ls.h.tools.runner.host
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		kept := make(chan error, 1)
+		go func() { kept <- keep(ctx, ls.h.tools.gw, host, store, run, "job-1") }()
+		posted := func(what string, ok func(liveFramePost) bool) {
+			t.Helper()
+			for ctx.Err() == nil {
+				ls.mu.Lock()
+				for _, p := range ls.posts {
+					if ok(p) {
+						ls.mu.Unlock()
+						return
+					}
+				}
+				ls.mu.Unlock()
+				time.Sleep(50 * time.Millisecond)
+			}
+			t.Fatalf("no post %s", what)
+		}
+		ls.mu.Lock()
+		ls.posts = nil
+		ls.mu.Unlock()
+		posted("from the keeper", func(p liveFramePost) bool { return p.Waiting == waitSignIn && p.Data != "" })
+
+		// Still on the sign-in page: the view answers the pause, kept.
+		if head, _ = ls.h.call("browser_view", map[string]any{"run": run}); head["checkpoint"] != cpNeedsHuman {
+			t.Fatalf("view on the sign-in page = %v", head)
+		}
+		select {
+		case err := <-kept:
+			t.Fatalf("the keeper ended while the sign-in waits: %v", err)
+		default:
+		}
+
+		// The person signs in: the page is back on the site.
+		r, _ := store.load(run)
+		tb, err := host.attach(ctx, r.Tab, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := evaluate(ctx, tb, `setTimeout(() => { location.href = "`+ls.site+`/home" }, 0), 1`, nil); err != nil {
+			t.Fatal(err)
+		}
+		tb.detach(ctx)
+		for u := ""; !strings.HasSuffix(u, "/home"); {
+			if ctx.Err() != nil {
+				t.Fatalf("the page did not come back: %s", u)
+			}
+			time.Sleep(50 * time.Millisecond)
+			u, _ = host.url(ctx, r.Tab)
+		}
+		head, text = ls.h.call("browser_view", map[string]any{"run": run})
+		if head["checkpoint"] != nil || !strings.Contains(text, "Your tasks") || !strings.Contains(head["note"].(string), "finished signing in") {
+			t.Fatalf("view once signed in = %v\n%s", head, text)
+		}
+		if r, _ = store.load(run); r.Checkpoint != nil {
+			t.Fatalf("the run still waits: %+v", r.Checkpoint)
+		}
+		select {
+		case err := <-kept:
+			if err != nil {
+				t.Fatalf("keeper = %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the keeper still holds the view")
+		}
+		posted("ending the view", func(p liveFramePost) bool { return p.End })
+	})
+
 	t.Run("leaving the site", func(t *testing.T) {
 		ls := newLateSignIn(t, browser)
 		head, text := ls.h.call("browser_open", map[string]any{"url": ls.site + "/away"})

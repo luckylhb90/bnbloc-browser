@@ -226,6 +226,9 @@ func (t *tools) view(ctx context.Context, args json.RawMessage) (any, *rpcError)
 	if err != nil {
 		return nil, toolFailure(err)
 	}
+	if res, rerr, resumed := t.resumeSignedIn(ctx, r, tb, sess); resumed {
+		return res, rerr
+	}
 	// A run that waits answers what it waits for; one that goes on is
 	// answered as its page is now, a sign-in it came to since included
 	// (handed to the person by its requester's turn only).
@@ -277,6 +280,17 @@ func (t *tools) find(ctx context.Context, args json.RawMessage) (any, *rpcError)
 	sess, err := t.gw.session(ctx)
 	if err != nil {
 		return nil, toolFailure(err)
+	}
+	res, rerr, resumed := t.resumeSignedIn(ctx, r, tb, sess)
+	switch {
+	case resumed && (rerr != nil || r.Checkpoint != nil):
+		return res, rerr
+	case resumed:
+		// Signed in and going on: found on the page as it is now.
+		if tb, err = t.runner.host.attach(ctx, r.Tab, r.Device); err != nil {
+			return nil, toolFailure(err)
+		}
+		defer tb.detach(context.Background())
 	}
 	// A sign-in the page of a run that goes on came to is the person's:
 	// answered as the pause (view), never as controls to find.
@@ -387,14 +401,9 @@ func (t *tools) act(ctx context.Context, args json.RawMessage) (any, *rpcError) 
 	if sess.Requester != r.Requester {
 		return nil, toolFailure(errNotRequester)
 	}
-	// The view kept for a person (keep.go) ends: this call shows the run.
-	t.runner.store.stopKeeper(r.ID)
-	tb, err := t.runner.host.attach(ctx, r.Tab, r.Device)
-	if err != nil {
-		if errors.Is(err, errTabGone) {
-			t.runner.store.remove(r.ID)
-		}
-		return nil, toolFailure(err)
+	tb, rerr := t.takeOver(ctx, r)
+	if rerr != nil {
+		return nil, rerr
 	}
 	defer tb.detach(context.Background())
 	if in.Confirmed {
@@ -413,6 +422,46 @@ func (t *tools) act(ctx context.Context, args json.RawMessage) (any, *rpcError) 
 	return t.step(ctx, r, tb, sess, false, func(_ *liveFeed, pg *page) (*checkpoint, string, error) {
 		return t.doAll(ctx, r, tb, sess, pg, in)
 	})
+}
+
+// takeOver ends the view kept for a person (keep.go) and attaches the
+// run's tab: this call shows the run.
+func (t *tools) takeOver(ctx context.Context, r *runState) (tabHandle, *rpcError) {
+	t.runner.store.stopKeeper(r.ID)
+	tb, err := t.runner.host.attach(ctx, r.Tab, r.Device)
+	if err != nil {
+		if errors.Is(err, errTabGone) {
+			t.runner.store.remove(r.ID)
+		}
+		return nil, toolFailure(err)
+	}
+	return tb, nil
+}
+
+// resumeSignedIn resumes a run paused for its requester to sign in once
+// tb's page is past the sign-in (pastSignIn), as an act resumes it: the
+// kept view ends (takeOver) and a step that does nothing lets the page
+// settle and answers it (QA 2026-10-20: the pause tells the agent to go on
+// with browser_view once the person is done, and view kept answering the
+// pause). tb is let go of when it resumes; resumed false leaves all as it
+// was.
+func (t *tools) resumeSignedIn(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession) (res any, rerr *rpcError, resumed bool) {
+	if r.Checkpoint == nil || r.Checkpoint.Kind != cpNeedsHuman || sess.Requester != r.Requester {
+		return nil, nil, false
+	}
+	if pg, err := observe(ctx, tb); err != nil || !r.pastSignIn(pg) {
+		return nil, nil, false
+	}
+	tb.detach(context.Background())
+	tb, rerr = t.takeOver(ctx, r)
+	if rerr != nil {
+		return nil, rerr, true
+	}
+	defer tb.detach(context.Background())
+	res, rerr = t.step(ctx, r, tb, sess, true, func(*liveFeed, *page) (*checkpoint, string, error) {
+		return nil, "the person finished signing in; the run goes on from this page", nil
+	})
+	return res, rerr, true
 }
 
 // doAll does the call's action, then each of its then on the same page,
