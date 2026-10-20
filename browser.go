@@ -47,6 +47,26 @@ type page struct {
 	OmittedActions int               `json:"omitted_actions"`
 	Fingerprint    string            `json:"-"`
 	guardsRaw      map[string]string // node → its guard's JSON
+	// LoadedMs is how long ago the page finished loading, LeftMs how long
+	// ago it began a navigation to another document (nil: not yet, or not
+	// known). Neither is part of what it shows.
+	LoadedMs *float64 `json:"loaded_ms"`
+	LeftMs   *float64 `json:"left_ms"`
+}
+
+// justMoved is how long a page that finished loading may still send itself
+// on by script (a session check sending it to the identity provider; QA
+// 2026-10-20), and how long one that began leaving may still show while
+// the next is on its way (Chrome holds a read once the request is out; a
+// navigation that ended in a download or nothing leaves the page as it is).
+const justMoved = time.Second
+
+// onItsWay reports a page that may be about to become another, which a
+// step waits out before taking it for where it came to: one that just
+// loaded, or just began leaving.
+func onItsWay(pg *page) bool {
+	recent := func(ms *float64) bool { return ms != nil && *ms < float64(justMoved.Milliseconds()) }
+	return recent(pg.LoadedMs) || recent(pg.LeftMs)
 }
 
 type pageScroll struct {

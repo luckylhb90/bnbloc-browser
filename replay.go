@@ -28,16 +28,24 @@ const (
 	replayFrameBudget = 1_600_000
 	// replayQuality is a frame's JPEG quality.
 	replayQuality = 45
+	// replaySignIn is what the replay shows for a step whose page was a
+	// sign-in, never pictured.
+	replaySignIn = "Sign-in page — not pictured"
 )
 
 // framesDir is where a run's frames are kept, beside its state.
 func (s runStore) framesDir(id string) string { return filepath.Join(s.dir, id+".frames") }
 
 // keepFrame pictures the page after the run's last step as its frame,
-// unless the page is a sign-in.
+// unless the page is a sign-in (marked so).
 func (t *tools) keepFrame(ctx context.Context, r *runState, tb tabHandle) {
 	pg, err := observe(ctx, tb)
-	if err != nil || len(r.History) == 0 || signInPage(pg) || hasSecret(pg) {
+	if err != nil || len(r.History) == 0 {
+		return
+	}
+	last := &r.History[len(r.History)-1]
+	if signInPage(pg) {
+		last.SignIn = true
 		return
 	}
 	shot, _, err := capture(ctx, tb, replayQuality)
@@ -45,7 +53,6 @@ func (t *tools) keepFrame(ctx context.Context, r *runState, tb tabHandle) {
 		return
 	}
 	dir := t.runner.store.framesDir(r.ID)
-	last := &r.History[len(r.History)-1]
 	if os.MkdirAll(dir, 0o700) != nil || os.WriteFile(filepath.Join(dir, strconv.Itoa(last.Step)+".jpg"), []byte(shot), 0o600) != nil {
 		return
 	}
@@ -74,6 +81,9 @@ func (t *tools) writeReplay(r *runState) {
 	for i := len(r.History) - 1; i >= 0; i-- {
 		h := r.History[i]
 		s := replayStep{Step: h.Step, What: describeStep(h), Text: h.Text, URL: h.URL, At: time.UnixMilli(h.AtMs).Format("15:04:05")}
+		if h.SignIn {
+			s.Note = replaySignIn
+		}
 		if h.Frame {
 			raw, err := os.ReadFile(filepath.Join(t.runner.store.framesDir(r.ID), strconv.Itoa(h.Step)+".jpg"))
 			switch {

@@ -83,7 +83,10 @@ at most 1024 wide: an image costs the agent far more than the text.
    decision's `NEEDS_HUMAN` (a sign-in, a second factor, a captcha, a
    blank sign-in redirect), is `needs_human`; so is a sign-in page off
    the run's sites (an identity provider: a secret field, or an address or
-   title naming a sign-in), before any decision there. A blank hand-off
+   title naming a sign-in), before any decision there, however late the
+   page gets there: a step waits out a page that just loaded or began
+   leaving (a script's redirect once it loaded), and every answer of a
+   page checks it by the same rule. A blank hand-off
    page (one form of hidden fields, a SAML or OIDC POST binding) still
    standing after 1.5 s is submitted, which is all its own onload does:
    in a background window Chrome can leave it unsubmitted, and the page

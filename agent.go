@@ -222,7 +222,17 @@ func (t *tools) view(ctx context.Context, args json.RawMessage) (any, *rpcError)
 		return nil, toolFailure(err)
 	}
 	defer tb.detach(context.Background())
-	return t.result(ctx, r, tb, r.Checkpoint, pageNote(tb), in.Screenshot), nil
+	sess, err := t.gw.session(ctx)
+	if err != nil {
+		return nil, toolFailure(err)
+	}
+	// A run that waits answers what it waits for; one that goes on is
+	// answered as its page is now, a sign-in it came to since included
+	// (handed to the person by its requester's turn only).
+	if r.Checkpoint != nil || sess.Requester != r.Requester {
+		return t.result(ctx, r, tb, r.Checkpoint, pageNote(tb), in.Screenshot), nil
+	}
+	return t.answer(ctx, r, tb, nil, sess, markOf(r), nil, "", nil, in.Screenshot)
 }
 
 // pageNote says what keeps a page from being read ("" nothing).
@@ -264,9 +274,23 @@ func (t *tools) find(ctx context.Context, args json.RawMessage) (any, *rpcError)
 		return nil, toolFailure(err)
 	}
 	defer tb.detach(context.Background())
-	pg, err := observe(ctx, tb)
+	sess, err := t.gw.session(ctx)
 	if err != nil {
 		return nil, toolFailure(err)
+	}
+	// A sign-in the page of a run that goes on came to is the person's:
+	// answered as the pause (view), never as controls to find.
+	var pg *page
+	if r.Checkpoint == nil && sess.Requester == r.Requester {
+		var cp *checkpoint
+		if pg, cp = signInNow(ctx, r, tb); cp != nil {
+			return t.answer(ctx, r, tb, nil, sess, markOf(r), cp, "", nil, false)
+		}
+	}
+	if pg == nil {
+		if pg, err = observe(ctx, tb); err != nil {
+			return nil, toolFailure(err)
+		}
 	}
 	ctrls := controlsOf(pg)
 	if len(ctrls) > component.MaxDecisionChoices {
@@ -571,9 +595,7 @@ func pressKey(name string) component.LiveInput {
 }
 
 // step runs do on the run's page, follows a tab the page opened, lets the
-// page settle and answers what it came to, the run saved: a checkpoint
-// (with the keeper for a sign-in) or the page: all of it when whole,
-// else what changed when it is the same page (view.go).
+// page settle and answers what it came to (answer).
 func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, whole bool, do func(*liveFeed, *page) (*checkpoint, string, error)) (any, *rpcError) {
 	live := startLive(t.gw, tb, r.ID)
 	defer func() { live.end() }()
@@ -590,7 +612,7 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 		pg = &page{}
 	}
 	before := t.runner.host.tabs(ctx)
-	steps, paused := len(r.History), r.Checkpoint
+	mark := markOf(r)
 	cp, note, err := do(live, pg)
 	switch {
 	case errors.As(err, new(blockedError)):
@@ -617,14 +639,48 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 	if cp == nil {
 		cp = t.settle(ctx, r, tb)
 	}
+	since := pg
+	if whole || pg.URL == "" {
+		since = nil // an opened page, or one not read before: all of it
+	}
+	return t.answer(ctx, r, tb, live, sess, mark, cp, note, since, false)
+}
+
+// runMark is where a run stood before a call: its steps and its pause.
+type runMark struct {
+	steps  int
+	paused *checkpoint
+}
+
+// markOf is where r stands now.
+func markOf(r *runState) runMark { return runMark{steps: len(r.History), paused: r.Checkpoint} }
+
+// answer saves the run as the call leaves it, at cp (nil: it goes on), and
+// answers it: the checkpoint, or the page, all of it when since is nil,
+// else what changed when it is the same page (view.go). It is the one
+// place a call that moved or read the run's page answers it (open and act
+// through step, view, find): a sign-in the page came to after it settled
+// (a page's script sending it to the identity provider once it loaded;
+// QA 2026-10-20) pauses here, by settle's rule, whichever call sees it,
+// and the page answered is the one checked. A pause for the person keeps
+// the view in the room for them, held by the keeper. live is the call's
+// view (nil: none).
+func (t *tools) answer(ctx context.Context, r *runState, tb tabHandle, live *liveFeed, sess component.RelaySession, mark runMark, cp *checkpoint, note string, since *page, withShot bool) (any, *rpcError) {
+	var now *page
+	if cp == nil {
+		now, cp = signInNow(ctx, r, tb)
+	}
 	r.Checkpoint = cp
 	// The replay pictures what the run did, never a sign-in (§2.8a).
 	switch {
 	case cp != nil && cp.Kind == cpNeedsHuman:
-		if paused == nil || paused.Kind != cpNeedsHuman {
-			r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: "PERSON", Action: "A person signs in here", Kind: "person", AtMs: t.runner.now().UnixMilli()})
+		if len(r.History) > mark.steps {
+			r.History[len(r.History)-1].SignIn = true
 		}
-	case len(r.History) > steps:
+		if mark.paused == nil || mark.paused.Kind != cpNeedsHuman {
+			r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: "PERSON", Action: "A person signs in here", Kind: "person", SignIn: true, AtMs: t.runner.now().UnixMilli()})
+		}
+	case len(r.History) > mark.steps:
 		t.keepFrame(ctx, r, tb)
 	}
 	if cp != nil {
@@ -640,16 +696,18 @@ func (t *tools) step(ctx context.Context, r *runState, tb tabHandle, sess compon
 	if note == "" {
 		note = pageNote(tb)
 	}
-	since := pg
-	if whole || cp != nil || pg.URL == "" {
-		since = nil // an opened page, a pause, or one not read before: all of it
+	if cp != nil {
+		since = nil // a pause: all of the page
 	}
-	res := t.resultSince(ctx, r, tb, cp, note, false, since)
+	res := t.resultSince(ctx, r, tb, now, cp, note, withShot, since)
 	if cp != nil && cp.Kind == cpNeedsHuman {
 		// Only the person can go on: the view stays in the room for them,
 		// held by the keeper. This call's session leaves the page first: a
 		// session leaving clears the run's device for every other (device.go).
 		live.end()
+		if live == nil {
+			live = newFeed(t.gw, tb, r.ID)
+		}
 		live.announce(ctx, cp.Waiting)
 		dismissDialog(context.Background(), tb)
 		tb.detach(context.Background())
@@ -679,19 +737,21 @@ func (t *tools) openedTab(ctx context.Context, before map[string]string, r *runS
 // signInSettle bounds how long a step waits for its page to settle;
 // idpSettle is how long an identity provider's page must stay before it is
 // taken for a sign-in that waits for the person (a single sign-on the
-// person already has redirects back by itself).
+// person already has redirects back by itself); idpLook is how often it is
+// looked at meanwhile.
 const (
 	signInSettle = 10 * time.Second
 	idpSettle    = 3 * time.Second
+	idpLook      = 500 * time.Millisecond
 )
 
 // settle waits for the page to come to rest after a step and answers what
 // it waits at: a sign-in (needs_human), a page's question, a download, a
-// page off the run's sites; nil to go on.
+// page off the run's sites; nil to go on. A page on its way to another
+// (onItsWay) is not at rest yet.
 func (t *tools) settle(ctx context.Context, r *runState, tb tabHandle) *checkpoint {
 	deadline := time.Now().Add(signInSettle)
-	var idpURL string
-	var idpSince time.Time
+	var idp signInWatch
 	reloaded := false
 	for {
 		if crashedOf(tb) {
@@ -723,15 +783,17 @@ func (t *tools) settle(ctx context.Context, r *runState, tb tabHandle) *checkpoi
 		if posted, _ := autoPost(ctx, tb, pg); posted {
 			continue // the page's own hand-off went on
 		}
-		if !r.onSite(pg.URL) && signInPage(pg) {
-			if pg.URL != idpURL {
-				idpURL, idpSince = pg.URL, time.Now()
+		cp, again := idp.at(r, pg, deadline)
+		switch {
+		case cp != nil:
+			return cp
+		case again:
+			if sleepCtx(ctx, idpLook) != nil {
+				return nil
 			}
-			// A password to enter, or a page that stayed: the person's.
-			if hasSecret(pg) || time.Since(idpSince) >= idpSettle || time.Now().After(deadline) {
-				return waitForPerson(nil, waitSignIn)
-			}
-			if sleepCtx(ctx, 500*time.Millisecond) != nil {
+			continue
+		case onItsWay(pg) && time.Now().Before(deadline):
+			if sleepCtx(ctx, 200*time.Millisecond) != nil {
 				return nil
 			}
 			continue
@@ -741,6 +803,25 @@ func (t *tools) settle(ctx context.Context, r *runState, tb tabHandle) *checkpoi
 				Reason: "the page is now on " + siteOf(pg.URL) + ", outside the run's sites; ask the person who asked you whether to go on there, then act again with confirmed"}
 		}
 		return nil
+	}
+}
+
+// signInNow reads the run's page and answers it with the sign-in it waits
+// at (signInWatch, settle's rule), looking again while an identity
+// provider's page may still pass through (at most idpSettle); a nil page
+// when it cannot be read.
+func signInNow(ctx context.Context, r *runState, tb tabHandle) (*page, *checkpoint) {
+	var idp signInWatch
+	deadline := time.Now().Add(idpSettle)
+	for {
+		pg, err := observe(ctx, tb)
+		if err != nil {
+			return nil, nil
+		}
+		cp, again := idp.at(r, pg, deadline)
+		if !again || sleepCtx(ctx, idpLook) != nil {
+			return pg, cp
+		}
 	}
 }
 

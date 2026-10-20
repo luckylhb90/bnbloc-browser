@@ -42,6 +42,19 @@ them, captions fall back to a 7×13 ASCII font where other characters read
 downloads, and opens the room file a relative link names in its own tab,
 where it can be downloaded.
 
+**Sign-ins** (0.7.2). A page off the run's sites that asks someone to sign
+in (a password field, or an address or title naming a sign-in) pauses the
+run at `needs_human`: a password at once, an identity provider's
+login-name page once it stayed 3 s (a single sign-on the person already has
+passes through by itself). The live view stays in the room for the person
+to sign in, and the agent goes on once they say so. A page that sends
+itself to the identity provider by script after it loaded (an expired
+session) is caught too: a step waits a moment after a page loaded, and
+while a navigation it began is on its way, before it takes the page as
+where it came to, and every call that answers a page (`browser_open`,
+`browser_act`, `browser_view`, `browser_find`) checks it for a sign-in
+first. Sign-in pages are never pictured; the replay says so.
+
 Nothing to configure: the room is the credential (`mcp.credentials: "room"`).
 Each call reaches the gateway through the bridge's room relay, as the person
 the agent is answering. How it works: [`docs/design.md`](docs/design.md).

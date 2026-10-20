@@ -84,8 +84,10 @@ type historyRecord struct {
 	PageChanged *bool   `json:"pageChanged,omitempty"`
 	Confidence  float64 `json:"confidence"`
 	AtMs        int64   `json:"atMs"`
-	// Frame: the page after the step is pictured (replay.go).
-	Frame bool `json:"frame,omitempty"`
+	// Frame: the page after the step is pictured (replay.go); SignIn: it
+	// was a sign-in, never pictured (the replay says so).
+	Frame  bool `json:"frame,omitempty"`
+	SignIn bool `json:"signIn,omitempty"`
 }
 
 // checkpoint is a pause: what it is, what it is about, and what the agent
@@ -340,6 +342,31 @@ func signInPage(pg *page) bool {
 		return true
 	}
 	return signInWords.MatchString(strings.ToLower(pg.URL + " " + pg.Title))
+}
+
+// signInWatch is the one rule for when a sign-in waits for the person
+// (settle and every answer of a page, agent.go): a page off the run's
+// sites that asks someone to sign in is theirs at once when it asks for a
+// secret, else once it stayed idpSettle (a single sign-on the person
+// already has passes through it by itself) or the caller's deadline came.
+type signInWatch struct {
+	url   string
+	since time.Time
+}
+
+// at answers pg's pause (nil: none yet), and whether pg is an identity
+// provider's page that may still pass through: look again.
+func (w *signInWatch) at(r *runState, pg *page, deadline time.Time) (*checkpoint, bool) {
+	if r.onSite(pg.URL) || !signInPage(pg) {
+		return nil, false
+	}
+	if pg.URL != w.url {
+		w.url, w.since = pg.URL, time.Now()
+	}
+	if hasSecret(pg) || time.Since(w.since) >= idpSettle || time.Now().After(deadline) {
+		return waitForPerson(nil, waitSignIn), false
+	}
+	return nil, true
 }
 
 var signInWords = regexp.MustCompile(`(^|[^a-z])(login|log-in|signin|sign-in|sign_in|logon|sso|saml|oauth2?|oidc|openid|authorize|auth|idp|adfs|mfa|2fa|otp)([^a-z]|$)`)

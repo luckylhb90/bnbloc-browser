@@ -27,6 +27,20 @@ func writeFile(t *testing.T, path, content string) {
 // when none is installed.
 func startTestChrome(t *testing.T) *cdpConn {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := dialCDP(ctx, startTestBrowser(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.close)
+	return c
+}
+
+// startTestBrowser is startTestChrome's browser, answered as its DevTools
+// endpoint (a host's --endpoint).
+func startTestBrowser(t *testing.T) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("a real browser: not in -short")
 	}
@@ -47,12 +61,7 @@ func startTestChrome(t *testing.T) *cdpConn {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
-	c, err := dialCDP(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(c.close)
-	return c
+	return url
 }
 
 // The executor on a real Chrome against jev-ultrafast's fixture page

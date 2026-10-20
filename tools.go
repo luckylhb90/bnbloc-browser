@@ -197,16 +197,18 @@ func (t *tools) lockRun(id string) (func(), *runState, *rpcError) {
 // (withShot) adds a screenshot: an image costs the agent far more than
 // the text, which usually says enough.
 func (t *tools) result(ctx context.Context, r *runState, tb tabHandle, cp *checkpoint, note string, withShot bool) any {
-	return t.resultSince(ctx, r, tb, cp, note, withShot, nil)
+	return t.resultSince(ctx, r, tb, nil, cp, note, withShot, nil)
 }
 
-// resultSince is result answering only what changed since the page was
-// since, when it is the same page and the change is small (view.go).
-func (t *tools) resultSince(ctx context.Context, r *runState, tb tabHandle, cp *checkpoint, note string, withShot bool, since *page) any {
+// resultSince is result for pg (nil: the page read now), answering only
+// what changed since the page was since, when it is the same page and the
+// change is small (view.go).
+func (t *tools) resultSince(ctx context.Context, r *runState, tb tabHandle, pg *page, cp *checkpoint, note string, withShot bool, since *page) any {
 	var img string
-	var pg *page
 	if tb != nil {
-		pg, _ = observe(ctx, tb)
+		if pg == nil {
+			pg, _ = observe(ctx, tb)
+		}
 		if withShot {
 			img, _ = screenshot(ctx, tb)
 		}

@@ -2,7 +2,7 @@
   "kind": "bnbloc.mcp.package/v1",
   "contract": "bnbloc.mcp.contract/v1",
   "name": "browser",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "publisher": "bnbloc",
   "description": "Operate web pages in a dedicated, visible Chrome profile on the member's machine: the agent reads each page and acts on its controls, as a desktop, phone or tablet shows them, and can turn a run into an animated GIF guide; the component pauses before anything irreversible, for a sign-in only the person can do, and before leaving the site. No credentials to set: the room is the credential (each call acts as the person the agent is answering, in their own browser).",
   "runtime": "stdio",

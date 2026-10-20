@@ -1,6 +1,12 @@
 (() => {
   if (!document.body) return null;
   const cache = window.__bnblocBrowse ||= {ids:new WeakMap(), nodes:new Map(), next:1};
+  // A navigation to another document the page began (a script's redirect, a form) shows nothing
+  // until it arrives: the page reports when it began.
+  if (!cache.watching && window.navigation) {
+    cache.watching=true;
+    navigation.addEventListener('navigate',e=>{ if (!e.destination.sameDocument && e.downloadRequest===null) cache.left=performance.now(); });
+  }
   const identity = e => {
     if (!cache.ids.has(e)) cache.ids.set(e,cache.next++);
     const id=cache.ids.get(e); cache.nodes.set(id,e); return id;
@@ -116,6 +122,8 @@
   if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
   if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
+  const loaded=performance.getEntriesByType('navigation')[0]?.loadEventEnd;
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
-    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
+    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions,
+    left_ms:cache.left ? performance.now()-cache.left : null,loaded_ms:loaded ? performance.now()-loaded : null};
 })()

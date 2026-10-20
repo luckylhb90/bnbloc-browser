@@ -86,6 +86,27 @@ func TestReplayNeverPicturesASignIn(t *testing.T) {
 	}
 }
 
+// A step whose page was a sign-in says why it has no picture (QA
+// 2026-10-20: "No picture for this step" on two opens that landed on the
+// identity provider); one without a picture for no such reason says
+// nothing more.
+func TestReplaySaysASignInIsNotPictured(t *testing.T) {
+	tl := &tools{runner: &runner{store: runStore{dir: t.TempDir()}}, workspace: t.TempDir()}
+	r := &runState{ID: "brun_signin", History: []historyRecord{
+		{Step: 1, Operation: "OPEN", Action: "https://portal.example.com/task", SignIn: true},
+		{Step: 2, Operation: "PERSON", Action: "A person signs in here", Kind: "person", SignIn: true},
+		{Step: 3, Operation: "CLICK", Action: "Start"},
+	}}
+	tl.writeReplay(r)
+	steps, page := replayOf(t, tl.workspace, r.ID)
+	if steps[0].Note != replaySignIn || steps[1].Note != replaySignIn || steps[2].Note != "" || steps[2].Frame != "" {
+		t.Fatalf("steps = %+v", steps)
+	}
+	if !strings.Contains(page, "s.note||'No picture for this step'") {
+		t.Fatal("the replay shows no note for a step without one")
+	}
+}
+
 // Frames are kept newest first within the budget; an older step past it
 // keeps its text.
 func TestReplayKeepsNewestFramesWithinBudget(t *testing.T) {
