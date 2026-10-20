@@ -284,9 +284,11 @@ type fakeHost struct {
 	forwarded []string
 	openers   map[string]string
 	dl        map[string][]string
+	// shownAs are the tabs opened or attached, each "<tab> <device>".
+	shownAs []string
 }
 
-func (h *fakeHost) open(context.Context) (tabHandle, error) {
+func (h *fakeHost) open(_ context.Context, dev string) (tabHandle, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.opened++
@@ -295,16 +297,18 @@ func (h *fakeHost) open(context.Context) (tabHandle, error) {
 		h.pages = map[string]*fakePage{}
 	}
 	h.pages[id] = h.next
+	h.shownAs = append(h.shownAs, id+" "+dev)
 	return &fakeTab{fakePage: h.next, id: id}, nil
 }
 
-func (h *fakeHost) attach(_ context.Context, id string) (tabHandle, error) {
+func (h *fakeHost) attach(_ context.Context, id, dev string) (tabHandle, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	p, ok := h.pages[id]
 	if !ok {
 		return nil, errTabGone
 	}
+	h.shownAs = append(h.shownAs, id+" "+dev)
 	return &fakeTab{fakePage: p, id: id}, nil
 }
 

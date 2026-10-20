@@ -47,30 +47,36 @@ func (t *tools) waitingSignIn(ctx context.Context, site string, sess component.R
 		if rerr != nil {
 			continue
 		}
-		tb, err := t.runner.host.attach(ctx, r.Tab)
-		if err != nil {
-			if errors.Is(err, errTabGone) {
-				t.runner.store.remove(r.ID)
-			}
+		// One session on the page at a time, the keeper's or this one's: a
+		// session leaving clears the run's device for the others (device.go).
+		t.runner.store.stopKeeper(r.ID)
+		tb, err := t.runner.host.attach(ctx, r.Tab, r.Device)
+		if errors.Is(err, errTabGone) {
+			t.runner.store.remove(r.ID)
 			unlock()
 			continue
 		}
-		t.runner.store.stopKeeper(r.ID)
+		var res any
+		if err == nil {
+			res = t.result(ctx, r, tb, r.Checkpoint, "this run already waits for the person to sign in to "+site+" (shown in the room): once they say they are done, go on with browser_view; a second tab would start a second sign-in that undoes this one", false)
+			tb.detach(context.Background())
+		}
 		if t.keeper != nil {
 			_ = t.keeper(r.ID, sess.JobID)
 		}
-		res := t.result(ctx, r, tb, r.Checkpoint, "this run already waits for the person to sign in to "+site+" (shown in the room): once they say they are done, go on with browser_view; a second tab would start a second sign-in that undoes this one", false)
-		tb.detach(context.Background())
 		unlock()
-		return res
+		if res != nil {
+			return res
+		}
 	}
 	return nil
 }
 
 // stop ends run id, or ("" ) every run of the requester in the session's
 // room: its keeper ends its view in the room, its tab closes, and the run
-// is forgotten. A run another call drives is left (reported busy).
-func (t *tools) stop(ctx context.Context, id, procedure, purpose string) (any, *rpcError) {
+// is forgotten. A run another call drives is left (reported busy). With
+// gif, each run's pictures become its GIF guide first (gif.go).
+func (t *tools) stop(ctx context.Context, id, procedure, purpose string, gif bool) (any, *rpcError) {
 	sess, err := t.gw.session(ctx)
 	if err != nil {
 		return nil, toolFailure(err)
@@ -83,7 +89,7 @@ func (t *tools) stop(ctx context.Context, id, procedure, purpose string) (any, *
 	if id == "" {
 		ids = t.runner.store.ids()
 	}
-	var stopped, busy []string
+	var stopped, busy, gifs, noGIF []string
 	for _, rid := range ids {
 		r, err := t.runner.store.load(rid)
 		switch {
@@ -108,6 +114,15 @@ func (t *tools) stop(ctx context.Context, id, procedure, purpose string) (any, *
 				return nil, &rpcError{Code: -32602, Message: err.Error()}
 			}
 		}
+		if gif {
+			// Made before the run goes: its pictures go with it.
+			if path, err := t.writeGIF(r); err == nil {
+				gifs = append(gifs, path)
+				t.writeReplay(r)
+			} else {
+				noGIF = append(noGIF, r.ID+": "+err.Error())
+			}
+		}
 		t.runner.store.stopKeeper(r.ID)
 		if err := t.runner.host.close(ctx, r.Tab); err != nil && !errors.Is(err, errTabGone) {
 			unlock()
@@ -121,6 +136,13 @@ func (t *tools) stop(ctx context.Context, id, procedure, purpose string) (any, *
 	if draft != "" {
 		head["procedure"] = draft
 		head["note"] = head["note"].(string) + "; the steps are a skill pack draft in " + draft + ": tell the person they can save it from the turn's files (Save as skill pack)"
+	}
+	if len(gifs) > 0 {
+		head["gif"] = gifs
+		head["note"] = head["note"].(string) + "; the GIF guide is in " + strings.Join(gifs, ", ") + ", shared with the turn's files: point the person to it"
+	}
+	if len(noGIF) > 0 {
+		head["noGif"] = noGIF
 	}
 	if len(busy) > 0 {
 		head["busy"] = busy
@@ -207,6 +229,9 @@ func checkpointResult(r *runState, cp *checkpoint, pv *pageView, note string) an
 		head["run"] = r.ID
 		head["steps"] = len(r.History)
 		head["sites"] = r.Sites
+		if _, ok := devices[r.Device]; ok {
+			head["device"] = r.Device
+		}
 	}
 	if cp != nil {
 		head["checkpoint"] = cp.Kind

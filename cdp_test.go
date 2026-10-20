@@ -127,7 +127,7 @@ func TestCDPTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.close()
-	tb, err := openTab(ctx, c, false)
+	tb, err := openTab(ctx, c, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestCDPTransport(t *testing.T) {
 	if err := c.call(ctx, "S-nope", "Runtime.evaluate", nil, nil); !errors.As(err, &ce) || ce.Code != -32001 {
 		t.Fatalf("a bad session = %v", err)
 	}
-	if _, err := attachTab(ctx, c, "T9"); !errors.Is(err, errTabGone) {
+	if _, err := attachTab(ctx, c, "T9", ""); !errors.Is(err, errTabGone) {
 		t.Fatalf("a closed tab = %v", err)
 	}
 	tb.detach(ctx)

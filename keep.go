@@ -133,7 +133,7 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		defer cancel()
 		_, _ = gw.liveFrame(ectx, job, liveFramePost{Run: r.ID, End: true})
 	}
-	tb, err := host.attach(ctx, r.Tab)
+	tb, err := host.attach(ctx, r.Tab, r.Device)
 	if err != nil {
 		end()
 		return err
@@ -197,7 +197,7 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 		}
 		if f.page() == nil {
 			if comeBack {
-				nt, err := host.attach(ctx, r.Tab)
+				nt, err := host.attach(ctx, r.Tab, r.Device)
 				if errors.Is(err, errTabGone) {
 					end()
 					return errTabGone
@@ -250,15 +250,13 @@ func keep(ctx context.Context, gw *relay, host browserHost, store runStore, runI
 			// A page that does not answer (a dialog the picture cannot
 			// show, a page that hangs) is not a closed tab: the view stays,
 			// with its last picture and the owner's input (focus brings the
-			// window forward), until the tab is gone from the browser.
-			probe, err := host.attach(tctx, r.Tab)
-			if errors.Is(err, errTabGone) {
+			// window forward), until the tab is gone from the browser. Asked
+			// of the browser, never attached: a session that emulated the
+			// run's device would clear it from the page as it left (device.go).
+			if _, err := host.url(tctx, r.Tab); errors.Is(err, errTabGone) {
 				cancel()
 				end()
 				return errTabGone
-			}
-			if err == nil {
-				probe.detach(tctx)
 			}
 			if failures == keepFailures {
 				logKeep("the page does not answer; holding the view while the tab is open")

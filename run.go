@@ -52,6 +52,10 @@ type runState struct {
 	Sites []string `json:"sites"`
 	// Threshold is the irreversibility predicate's pause threshold (§2.5).
 	Threshold float64 `json:"threshold"`
+	// Device is how the run's tab shows pages: phone, tablet, or desktop
+	// ("" too); every session that drives or shows the tab emulates it
+	// (device.go).
+	Device string `json:"device,omitempty"`
 	// Checkpoint is where the run waits ("" while it runs).
 	Checkpoint *checkpoint `json:"checkpoint,omitempty"`
 	// PausedJob is that turn's job: a needs_human pause keeps its live

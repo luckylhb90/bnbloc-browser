@@ -31,7 +31,7 @@ func TestLiveViewOnABackgroundWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(c.close)
-	tb, err := openTab(ctx, c, true)
+	tb, err := openTab(ctx, c, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}

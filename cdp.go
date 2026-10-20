@@ -245,7 +245,8 @@ type tab struct {
 // Not minimized: Chrome stops painting a minimized window, and its capture
 // (the live view's frames) never answers. A browser that cannot open such
 // a window gets a background tab; a headless one has no screen to take.
-func openTab(ctx context.Context, c *cdpConn, behind bool) (*tab, error) {
+// Its pages show as dev shows them (attachTab).
+func openTab(ctx context.Context, c *cdpConn, behind bool, dev string) (*tab, error) {
 	var created struct {
 		TargetID string `json:"targetId"`
 	}
@@ -259,11 +260,13 @@ func openTab(ctx context.Context, c *cdpConn, behind bool) (*tab, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open a tab: %w", err)
 	}
-	return attachTab(ctx, c, created.TargetID)
+	return attachTab(ctx, c, created.TargetID, dev)
 }
 
-// attachTab attaches to an existing tab; errTabGone when it is closed.
-func attachTab(ctx context.Context, c *cdpConn, targetID string) (*tab, error) {
+// attachTab attaches to an existing tab, its pages shown as dev shows them
+// (a run's device, device.go; "" or desktop: the window as it is);
+// errTabGone when it is closed.
+func attachTab(ctx context.Context, c *cdpConn, targetID, dev string) (*tab, error) {
 	var targets struct {
 		TargetInfos []struct {
 			TargetID string `json:"targetId"`
@@ -293,7 +296,16 @@ func attachTab(ctx context.Context, c *cdpConn, targetID string) (*tab, error) {
 	// more of the browser is changed than the run needs.
 	_ = t.call(ctx, "Inspector.enable", nil, nil)
 	_ = t.call(ctx, "Page.enable", nil, nil)
-	// A page laid out far smaller than its window is sized anew (live.go).
+	// An emulated device is emulated on this session; a desktop page laid
+	// out far smaller than its window is sized anew (live.go). Never both:
+	// a phone's page is far smaller than its window on purpose.
+	if d, ok := devices[dev]; ok {
+		if err := t.emulate(ctx, d); err != nil {
+			t.detach(context.Background())
+			return nil, fmt.Errorf("show the tab as a %s: %w", dev, err)
+		}
+		return t, nil
+	}
 	t.fitViewport(ctx)
 	return t, nil
 }

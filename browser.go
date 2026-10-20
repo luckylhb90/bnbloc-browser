@@ -506,10 +506,20 @@ func scaleJPEG(b64 string, w, h, quality int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sb := src.Bounds()
-	if sb.Dx() == w && sb.Dy() == h {
+	if sb := src.Bounds(); sb.Dx() == w && sb.Dy() == h {
 		return b64, nil
 	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, scaleImage(src, w, h), &jpeg.Options{Quality: quality}); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
+}
+
+// scaleImage is src scaled to w×h, each pixel the average of the pixels it
+// covers.
+func scaleImage(src image.Image, w, h int) *image.RGBA {
+	sb := src.Bounds()
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
 		y0, y1 := sb.Min.Y+y*sb.Dy()/h, sb.Min.Y+(y+1)*sb.Dy()/h
@@ -524,11 +534,7 @@ func scaleJPEG(b64 string, w, h, quality int) (string, error) {
 			dst.SetRGBA(x, y, boxAverage(src, x0, y0, x1, y1))
 		}
 	}
-	var out bytes.Buffer
-	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: quality}); err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
+	return dst
 }
 
 // maxShotWidth bounds a screenshot's width in image pixels.

@@ -164,11 +164,12 @@ func (t *tools) dispatch(ctx context.Context, method string, params json.RawMess
 				Run       string `json:"run"`
 				Procedure string `json:"procedure"`
 				Purpose   string `json:"purpose"`
+				GIF       bool   `json:"gif"`
 			}
 			if err := json.Unmarshal(p.Arguments, &in); err != nil {
 				return nil, invalidArgs(err)
 			}
-			return t.stop(ctx, strings.TrimSpace(in.Run), in.Procedure, in.Purpose)
+			return t.stop(ctx, strings.TrimSpace(in.Run), in.Procedure, in.Purpose, in.GIF)
 		default:
 			return nil, &rpcError{Code: -32602, Message: "unknown tool: " + p.Name}
 		}

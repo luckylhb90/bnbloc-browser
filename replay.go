@@ -15,7 +15,9 @@ import (
 // the page after it, are written to browser-runs/<run>.html in the agent's
 // workspace, which the bridge publishes as a room file like any other the
 // agent made. A sign-in is never pictured; frames are kept newest first
-// within the room's inline size.
+// within the room's inline size. A run's GIF guide (gif.go) is named on it:
+// the room runs the page sandboxed, with no downloads and no way to the
+// room's other files, so the page says where the GIF is.
 
 const (
 	// replayDir is the workspace directory replays are written to.
@@ -84,7 +86,14 @@ func (t *tools) writeReplay(r *runState) {
 		}
 		steps[i] = s
 	}
-	data, err := json.Marshal(map[string]any{"run": r.ID, "sites": r.Sites, "started": time.UnixMilli(r.StartedAtMs).Format("2006-01-02 15:04"), "steps": steps})
+	d := map[string]any{"run": r.ID, "sites": r.Sites, "started": time.UnixMilli(r.StartedAtMs).Format("2006-01-02 15:04"), "steps": steps}
+	if _, ok := devices[r.Device]; ok {
+		d["device"] = r.Device
+	}
+	if gif := t.gifOf(r.ID); gif != "" {
+		d["gif"] = gif
+	}
+	data, err := json.Marshal(d)
 	if err != nil {
 		return
 	}
@@ -153,14 +162,15 @@ li .at{color:#888;font-size:12px;margin-right:6px}
   body.list ol{display:block}
 }
 </style></head><body>
-<header><strong>Browser run replay</strong><span class="meta" id="meta"></span>
+<header><strong>Browser run replay</strong><span class="meta" id="meta"></span><span class="meta" id="gif" hidden></span>
 <button id="steps">Steps</button><button id="prev">&#9664;</button><button id="play">Play</button><button id="next">&#9654;</button></header>
 <main><div id="stage"><div id="shot"></div><div id="caption"><div id="what"></div><div class="url" id="url"></div></div></div><ol id="list"></ol></main>
 <script id="data" type="application/json">{{DATA}}</script>
 <script>
 const d=JSON.parse(document.getElementById('data').textContent), steps=d.steps;
 const $=id=>document.getElementById(id);
-$('meta').textContent=d.run+' · '+(d.sites||[]).join(', ')+' · '+d.started+' · '+steps.length+' steps';
+$('meta').textContent=d.run+' · '+(d.sites||[]).join(', ')+(d.device?' · as a '+d.device:'')+' · '+d.started+' · '+steps.length+' steps';
+if(d.gif){$('gif').textContent='GIF guide: '+d.gif+' (in the room\'s files)';$('gif').hidden=false}
 let at=steps.length-1, timer=null;
 steps.forEach((s,i)=>{const li=document.createElement('li');const t=document.createElement('span');t.className='at';t.textContent=s.at;
   li.append(t,document.createTextNode(s.step+'. '+s.what));li.onclick=()=>{stop();show(i)};$('list').append(li)});

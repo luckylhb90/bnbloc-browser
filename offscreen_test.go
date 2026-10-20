@@ -26,7 +26,7 @@ func TestOffscreenControlOnChrome(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tb, err := openTab(ctx, c, false)
+	tb, err := openTab(ctx, c, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestCoveredControlOnChrome(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tb, err := openTab(ctx, c, false)
+	tb, err := openTab(ctx, c, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestReplayPlaysOnChrome(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tb, err := openTab(ctx, c, false)
+	tb, err := openTab(ctx, c, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestFitViewportLeavesAFittingPageOnChrome(t *testing.T) {
 	c := startTestChrome(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tb, err := openTab(ctx, c, false)
+	tb, err := openTab(ctx, c, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestSamePageOnChrome(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tb, err := openTab(ctx, c, false)
+	tb, err := openTab(ctx, c, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,14 +226,14 @@ func TestCapturesAtOnceKeepThePageSizeOnChrome(t *testing.T) {
 	c := startTestChrome(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	tb, err := openTab(ctx, c, false)
+	tb, err := openTab(ctx, c, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := navigate(ctx, tb, "data:text/html,<title>x</title><h1>hello</h1>"); err != nil {
 		t.Fatal(err)
 	}
-	other, err := attachTab(ctx, tb.conn, tb.targetID)
+	other, err := attachTab(ctx, tb.conn, tb.targetID, "")
 	if err != nil {
 		t.Fatal(err)
 	}

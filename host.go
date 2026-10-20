@@ -202,8 +202,9 @@ func profileWritable(dir string) bool {
 // (localHost) or, by build order, another host behind the same executor.
 type browserHost interface {
 	// open starts a run's tab; attach reattaches it by id (errTabGone).
-	open(ctx context.Context) (tabHandle, error)
-	attach(ctx context.Context, id string) (tabHandle, error)
+	// Both show its pages as dev shows them (the run's device, device.go).
+	open(ctx context.Context, dev string) (tabHandle, error)
+	attach(ctx context.Context, id, dev string) (tabHandle, error)
 	// close closes a run's tab by id (errTabGone when it is gone).
 	close(ctx context.Context, id string) error
 	// url is a run's tab's address, and forward brings its window to the
@@ -226,21 +227,21 @@ type tabHandle interface {
 }
 
 // open starts a run's tab.
-func (h *localHost) open(ctx context.Context) (tabHandle, error) {
+func (h *localHost) open(ctx context.Context, dev string) (tabHandle, error) {
 	c, err := h.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return openTab(ctx, c, !h.cfg.Headless)
+	return openTab(ctx, c, !h.cfg.Headless, dev)
 }
 
 // attach reattaches a run's tab by its target id.
-func (h *localHost) attach(ctx context.Context, targetID string) (tabHandle, error) {
+func (h *localHost) attach(ctx context.Context, targetID, dev string) (tabHandle, error) {
 	c, err := h.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return attachTab(ctx, c, targetID)
+	return attachTab(ctx, c, targetID, dev)
 }
 
 // close closes a run's tab by its target id.
