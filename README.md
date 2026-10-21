@@ -84,7 +84,13 @@ cards: the outermost element showing the pointer cursor, or one with an
 text (at most 120 characters). One inside a listed control or holding one
 is left to that control (a card's own button is the button), and a label
 stands for its checkbox or radio only when that field is hidden (a styled
-checkbox).
+checkbox). The library's classes give its state (`…-opened` is
+`expanded=true`, `…-selected` `selected=true`) and leave out what it
+disabled (`…-disabled`). Every control is named so it stands alone: an icon
+without text by its icon (`refresh (icon)`, from an svg title or an id or
+class like `icon-ios-refresh`), a control in a table with its column and its
+row's first cell (`Edit (Action; alpha-db)`), a header's filter with its
+header. Controls are listed in page order.
 
 Nothing to configure: the room is the credential (`mcp.credentials: "room"`).
 Each call reaches the gateway through the bridge's room relay, as the person

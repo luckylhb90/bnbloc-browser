@@ -64,6 +64,56 @@
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
+  // A control's label made to stand alone. An icon that shows no text is
+  // named by its icon (an svg title, or the words of an id or class around
+  // "icon"/"btn": icon_modify_notice, x-icon-ios-funnel, sidebar-collapse-btn),
+  // marked as such. In a table, where a row's "Edit" or a count reads the same
+  // in every row, the label carries its column's header and its row's first
+  // cell (textContent: a fixed column's cell may be a hidden copy).
+  const variants=['ios','md','logo','fa','fas','far','o','outline','outlined','filled','fill','line',
+    'wrap','wrapper','box','container','inner','rel','item','group','icon','btn','button','svg','img'];
+  const iconName = e => {
+    const title=e.querySelector('svg title')?.textContent.trim();
+    if (title) return title;
+    const after=[], before=[];
+    for (const n of [e,...e.querySelectorAll('*')].slice(0,8)) {
+      const cls=typeof n.className==='string' ? n.className : n.className?.baseVal || '';
+      for (const token of [n.id,...cls.split(/\s+/)]) {
+        const w=(token||'').replace(/([a-z])([A-Z])/g,'$1 $2').toLowerCase().split(/[-_\s]+/).filter(Boolean);
+        const i=Math.max(w.lastIndexOf('icon'),w.lastIndexOf('btn'),w.lastIndexOf('button'));
+        if (i<0) continue;
+        const a=w.slice(i+1).filter(x=>!variants.includes(x)), b=w.slice(0,i);
+        if (a.length) after.push(a.join(' '));
+        else if (b.length>1 || b[0]?.length>3) before.push(b.join(' '));
+      }
+    }
+    const found=after[0] || before[0];
+    return found ? found+' (icon)' : '';
+  };
+  const header = td => {
+    const i=[...td.parentElement.children].indexOf(td);
+    for (let t=td.closest('table'), up=0; t && up<3; t=t.parentElement, up++) {
+      const row=t.querySelector('thead tr');
+      if (row) return row.children[i]?.textContent.trim().slice(0,60) || '';
+    }
+    return '';
+  };
+  const labelOf = (e,label) => {
+    const holder=e.parentElement;
+    label=label.replace(/\s+/g,' ').trim().slice(0,120) ||
+      holder?.getAttribute('aria-label') || holder?.getAttribute('title') || iconName(e);
+    // A header's control (a column's filter or sort) carries the header.
+    const th=e.closest('th');
+    if (label && th) {
+      const head=th.textContent.replace(/\s+/g,' ').trim().slice(0,60);
+      if (head && head!==label) return label+' ('+head+')';
+    }
+    const td=e.closest('td,[role="gridcell"]');
+    if (!label || !td?.parentElement) return label;
+    const head=header(td), first=[...td.parentElement.children].find(c=>c!==td && c.textContent.trim());
+    const context=[head,first?.textContent.replace(/\s+/g,' ').trim().slice(0,60)].filter(c=>c && c!==label);
+    return context.length ? label+' ('+context.join('; ')+')' : label;
+  };
   const actions=[], listed=new Set();
   for (const e of document.querySelectorAll(selector)) {
     if (e.type==='hidden' || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
@@ -73,7 +123,7 @@
     if (!rname || r.width<=0 || r.height<=0) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     listed.add(e);
-    const base={node:identity(e),role:rname,label:name(e)||rname,
+    const base={node:identity(e),role:rname,label:labelOf(e,name(e))||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) base.offscreen=true;
     for (const key of ['checked','selected','expanded']) {
@@ -105,7 +155,10 @@
   // pointer cursor, or by an onclick attribute. The outermost element showing
   // the pointer is the control (its text spans inherit the cursor). One inside
   // a listed control, or holding one, is left to that control; a label is its
-  // field's, unless the field is hidden (a styled checkbox).
+  // field's, unless the field is hidden (a styled checkbox). Its state is in
+  // its classes, as the library writes it (x-menu-opened on the item holding
+  // it, x-item-selected, x-page-disabled).
+  const classed = (e,re) => [...(e?.classList||[])].some(c=>re.test(c));
   const holds=new Set();
   for (const e of listed) for (let p=e.parentElement; p && !holds.has(p); p=p.parentElement) holds.add(p);
   const cursors=new Map();
@@ -119,14 +172,24 @@
     if (holds.has(e) || e.closest(selector)) continue;
     const field=e.closest('label')?.control;
     if (listed.has(field) || !visible(e) || e.closest('[aria-disabled="true"]')) continue;
-    const label=name(e).replace(/\s+/g,' ').trim().slice(0,120), r=e.getBoundingClientRect();
+    let off=false;
+    for (let p=e, up=0; p && up<3 && !off; p=p.parentElement, up++) off=classed(p,/(^|[-_])disabled$/);
+    if (off) continue;
+    const label=labelOf(e,name(e)), r=e.getBoundingClientRect();
     if (!label || r.width<=0 || r.height<=0) continue;
     const base={node:identity(e),role:'button',label,rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     const x=r.x+r.width/2, y=r.y+r.height/2;
     if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) base.offscreen=true;
+    const holder=e.parentElement?.firstElementChild===e ? e.parentElement : null;
+    if (classed(e,/(^|[-_])(opened|expanded)$/) || classed(holder,/(^|[-_])(opened|expanded)$/)) base.expanded='true';
+    if (classed(e,/(^|[-_])(selected|current)$/)) base.selected='true';
     if (['checkbox','radio'].includes(field?.type)) Object.assign(base,{role:field.type,checked:String(field.checked)});
     actions.push({...base,kind:'click',value:''});
   }
+  // In the page's order, as a person reads it (and the cap keeps the top of
+  // the page, not the native controls before the rest).
+  const at=a=>cache.nodes.get(a.node);
+  actions.sort((a,b)=>at(a)===at(b) ? 0 : at(a).compareDocumentPosition(at(b))&Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   const range=document.createRange(); let node,length=0;
   while ((node=walker.nextNode()) && length<12000) {
