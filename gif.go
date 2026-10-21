@@ -12,8 +12,8 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
-	"strconv"
 )
 
 // A run's GIF guide (browser_close gif): the run's pictures, step by step,
@@ -22,9 +22,11 @@ import (
 // replay. It is what a how-to for a support team is made of (2026-10-20:
 // a member wanted animated guides of their company's real app): each step
 // the run took shows for gifStepDelay with its caption (describeStep, the
-// replay's line), the last for gifLastDelay. Only steps with a picture are
-// in it, so a sign-in never is (replay.go). Each frame has its own palette
-// (median cut), undithered: a page's flat colours stay flat and compress.
+// replay's line), the last for gifLastDelay. Its pictures are the replay's
+// (replaySteps: the same choice, the acted controls marked on them), a
+// step that looks as the one before showing that one's picture, so a
+// sign-in never is in it. Each frame has its own palette (median cut),
+// undithered: a page's flat colours stay flat and compress.
 
 const (
 	// gifStepDelay and gifLastDelay are how long a step shows, in
@@ -35,7 +37,8 @@ const (
 	gifPhoneWidth = 480
 	gifWidth      = 800
 	// gifBudget bounds the file: past it the pictures shrink (to half
-	// their width at most), then every other step is dropped.
+	// their width at most), then half the pictures go, in the replay's
+	// order (dropOrder), until it fits.
 	gifBudget = 8 << 20
 )
 
@@ -45,10 +48,12 @@ var (
 	gifText = color.RGBA{240, 240, 240, 255}
 )
 
-// gifFrame is one step's picture and caption.
+// gifFrame is one step's picture and caption, and its picture's rank
+// (frameChoice.Rank: the lower, the sooner it goes).
 type gifFrame struct {
 	img     image.Image
 	caption string
+	rank    int
 }
 
 // writeGIF writes the run's GIF guide into the workspace and answers its
@@ -58,27 +63,24 @@ func (t *tools) writeGIF(r *runState) (string, error) {
 		return "", errors.New("no workspace to write it to")
 	}
 	var frames []gifFrame
-	for _, h := range r.History {
-		if !h.Frame {
+	pics := map[int]image.Image{} // a step → its picture, decoded
+	steps := t.replaySteps(r)
+	for i, s := range steps {
+		if s.Frame != "" {
+			pics[s.Step] = decodeFrame(s.Frame)
+		}
+		img := pics[s.Step]
+		if s.Same != 0 {
+			img = pics[s.Same]
+		}
+		if img == nil {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(t.runner.store.framesDir(r.ID), strconv.Itoa(h.Step)+".jpg"))
-		if err != nil {
-			continue
+		caption := fmt.Sprintf("%d. %s", len(frames)+1, describeStep(r.History[i]))
+		if s.Text != "" {
+			caption += ": " + s.Text
 		}
-		jpg, err := base64.StdEncoding.DecodeString(string(raw))
-		if err != nil {
-			continue
-		}
-		img, err := jpeg.Decode(bytes.NewReader(jpg))
-		if err != nil {
-			continue
-		}
-		caption := fmt.Sprintf("%d. %s", len(frames)+1, describeStep(h))
-		if h.Text != "" {
-			caption += ": " + h.Text
-		}
-		frames = append(frames, gifFrame{img: img, caption: caption})
+		frames = append(frames, gifFrame{img: img, caption: caption, rank: s.rank})
 	}
 	if len(frames) == 0 {
 		return "", errors.New("the run has no pictures to make a GIF of")
@@ -106,6 +108,20 @@ func (t *tools) writeGIF(r *runState) (string, error) {
 	return replayDir + "/" + r.ID + ".gif", nil
 }
 
+// decodeFrame is a kept frame (base64 JPEG) as a picture, nil when it is
+// none.
+func decodeFrame(b64 string) image.Image {
+	jpg, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil
+	}
+	img, err := jpeg.Decode(bytes.NewReader(jpg))
+	if err != nil {
+		return nil
+	}
+	return img
+}
+
 // gifOf answers the workspace path of the run's GIF guide, "" none.
 func (t *tools) gifOf(id string) string {
 	if _, err := os.Stat(filepath.Join(t.workspace, replayDir, id+".gif")); err != nil {
@@ -131,24 +147,40 @@ func encodeGIF(frames []gifFrame, widest, budget int) ([]byte, error) {
 		if len(out) <= budget {
 			return out, nil
 		}
-		switch {
-		case w*3/4 >= least:
+		if w*3/4 >= least {
 			w = w * 3 / 4
-		case len(frames) > 2:
-			frames = thinned(frames)
-		default:
+			continue
+		}
+		less := fewer(frames)
+		if len(less) == len(frames) {
 			return nil, fmt.Errorf("the GIF stays over %d MB", budget>>20)
 		}
+		frames = less
 	}
 }
 
-// thinned is every other frame, the last kept.
-func thinned(frames []gifFrame) []gifFrame {
-	var out []gifFrame
-	for i := 0; i < len(frames)-1; i += 2 {
-		out = append(out, frames[i])
+// fewer is frames without the lower ranked half of their pictures (a
+// picture's frames go together), in order; frames itself when they show
+// one picture.
+func fewer(frames []gifFrame) []gifFrame {
+	var ranks []int
+	for _, f := range frames {
+		if !slices.Contains(ranks, f.rank) {
+			ranks = append(ranks, f.rank)
+		}
 	}
-	return append(out, frames[len(frames)-1])
+	if len(ranks) < 2 {
+		return frames
+	}
+	slices.Sort(ranks)
+	least := ranks[len(ranks)/2]
+	var out []gifFrame
+	for _, f := range frames {
+		if f.rank >= least {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // encodeFrames encodes frames w wide: each picture scaled to w, on a

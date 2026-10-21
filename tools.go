@@ -343,8 +343,9 @@ func workspaceFile(rel string) (string, error) {
 }
 
 // upload sets the held file input to path (DOM.setFileInputFiles on the
-// observed node), when the page is still the one decided on.
-func (rn *runner) upload(ctx context.Context, r *runState, p browserPage, ps *pendingStep, path string) error {
+// observed node), when the page is still the one decided on. The act that
+// asked records the step.
+func (rn *runner) upload(ctx context.Context, p browserPage, ps *pendingStep, path string) error {
 	if ps == nil || ps.Action.Node == nil {
 		return errStale
 	}
@@ -364,11 +365,7 @@ func (rn *runner) upload(ctx context.Context, r *runState, p browserPage, ps *pe
 	if err := p.call(ctx, "Runtime.evaluate", map[string]any{"expression": expr}, &obj); err != nil || obj.Result.ObjectID == "" {
 		return errStale
 	}
-	if err := p.call(ctx, "DOM.setFileInputFiles", map[string]any{"files": []string{path}, "objectId": obj.Result.ObjectID}, nil); err != nil {
-		return err
-	}
-	r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: opUpload, Action: ps.Action.Label, Kind: "upload", Text: filepath.Base(path), URL: pg.URL, AtMs: rn.now().UnixMilli()})
-	return nil
+	return p.call(ctx, "DOM.setFileInputFiles", map[string]any{"files": []string{path}, "objectId": obj.Result.ObjectID}, nil)
 }
 
 func invalidArgs(err error) *rpcError {

@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,6 +20,31 @@ import (
 
 	"github.com/luckylhb90/bnbloc/component"
 )
+
+// fakeShots are the fake pages' pictures by title.
+var fakeShots sync.Map
+
+// fakeShot is a fake page's picture (base64 JPEG) at the fake viewport's
+// size (1000×500, so capture keeps it as it is): bands whose brightness
+// follows the title, so two titles look different.
+func fakeShot(title string) string {
+	if shot, ok := fakeShots.Load(title); ok {
+		return shot.(string)
+	}
+	sum := sha256.Sum256([]byte(title))
+	img := image.NewRGBA(image.Rect(0, 0, 1000, 500))
+	for x := 0; x < 1000; x++ {
+		v := sum[x*32/1000]
+		for y := 0; y < 500; y++ {
+			img.SetRGBA(x, y, color.RGBA{v, v, 255 - v, 255})
+		}
+	}
+	var out bytes.Buffer
+	_ = jpeg.Encode(&out, img, &jpeg.Options{Quality: 80})
+	shot := base64.StdEncoding.EncodeToString(out.Bytes())
+	fakeShots.Store(title, shot)
+	return shot
+}
 
 // fakeDoc is one state of a fake page.
 type fakeDoc struct {
@@ -186,6 +216,9 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 			return value(map[string]any{"x": a.Node, "y": 1})
 		case strings.HasPrefix(expr, "("+settleJS+")("):
 			return value(nil)
+		case strings.HasPrefix(expr, "("+actedJS+")("):
+			n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(expr, "("+actedJS+")("), ")"))
+			return value(map[string]any{"x": 100 * n, "y": 40, "w": 80, "h": 24})
 		case expr == "location.href":
 			return value(p.doc.url)
 		case expr == autoPostJS:
@@ -237,7 +270,7 @@ func (p *fakePage) call(_ context.Context, method string, params any, out any) e
 		return nil
 	case "Page.captureScreenshot":
 		// The picture follows the page: a new document, a new frame.
-		return reply(map[string]any{"data": base64.StdEncoding.EncodeToString([]byte("shot of " + p.doc.title))})
+		return reply(map[string]any{"data": fakeShot(p.doc.title)})
 	}
 	return fmt.Errorf("fake page: unexpected method %s", method)
 }

@@ -84,10 +84,20 @@ type historyRecord struct {
 	PageChanged *bool   `json:"pageChanged,omitempty"`
 	Confidence  float64 `json:"confidence"`
 	AtMs        int64   `json:"atMs"`
-	// Frame: the page after the step is pictured (replay.go); SignIn: it
-	// was a sign-in, never pictured (the replay says so).
-	Frame  bool `json:"frame,omitempty"`
-	SignIn bool `json:"signIn,omitempty"`
+	// Node is the control the step acted on (its box is marked on the
+	// step's picture); Checkpoint the pause the step came to.
+	Node       *int   `json:"node,omitempty"`
+	Checkpoint string `json:"checkpoint,omitempty"`
+	// Frame: the page after the step is pictured (replay.go), with its
+	// page's fingerprint, its look and its mark; Same: it looked as step
+	// Same's picture does, so it has none of its own; SignIn: it was a
+	// sign-in, never pictured (the replay says so).
+	Frame  bool       `json:"frame,omitempty"`
+	Page   string     `json:"page,omitempty"`
+	Look   *frameLook `json:"look,omitempty"`
+	Mark   *frameMark `json:"mark,omitempty"`
+	Same   int        `json:"same,omitempty"`
+	SignIn bool       `json:"signIn,omitempty"`
 }
 
 // checkpoint is a pause: what it is, what it is about, and what the agent

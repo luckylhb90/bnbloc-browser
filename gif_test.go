@@ -125,10 +125,11 @@ func TestGIFGuideShowsThePicturedSteps(t *testing.T) {
 	}
 }
 
-// A GIF past its budget shrinks, then drops every other step, keeping the
-// first and the last.
+// A GIF past its budget shrinks, then drops the lower ranked half of its
+// pictures (the replay's order), keeping the first and the last.
 func TestGIFStaysWithinItsBudget(t *testing.T) {
 	cols := []color.RGBA{red, green, blue, yellow, {0, 200, 200, 255}, {200, 0, 200, 255}}
+	ranks := []int{6, 1, 3, 2, 4, 5}
 	var frames []gifFrame
 	for i, col := range cols {
 		raw, _ := base64.StdEncoding.DecodeString(pictureJPEG(t, 120, 90, col, true))
@@ -136,7 +137,7 @@ func TestGIFStaysWithinItsBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		frames = append(frames, gifFrame{img: img, caption: strconv.Itoa(i+1) + ". step"})
+		frames = append(frames, gifFrame{img: img, caption: strconv.Itoa(i+1) + ". step", rank: ranks[i]})
 	}
 	whole, err := encodeGIF(frames, 120, 1<<30)
 	if err != nil {
@@ -162,19 +163,21 @@ func TestGIFStaysWithinItsBudget(t *testing.T) {
 	}
 }
 
-// Thinning keeps every other frame and the last.
-func TestThinned(t *testing.T) {
-	for n, want := range map[int]string{2: "0,1", 3: "0,2", 4: "0,2,3", 5: "0,2,4"} {
+// fewer keeps the higher ranked half of the pictures, in order, a
+// picture's frames together; one picture is as few as it gets.
+func TestFewer(t *testing.T) {
+	for ranks, want := range map[string]string{"1,2": "2", "3,1,2": "3,2", "4,1,3,2": "4,3", "2,2,1": "2,2", "5,5": "5,5"} {
 		var frames []gifFrame
-		for i := 0; i < n; i++ {
-			frames = append(frames, gifFrame{caption: strconv.Itoa(i)})
+		for _, r := range strings.Split(ranks, ",") {
+			n, _ := strconv.Atoi(r)
+			frames = append(frames, gifFrame{rank: n})
 		}
 		var got []string
-		for _, f := range thinned(frames) {
-			got = append(got, f.caption)
+		for _, f := range fewer(frames) {
+			got = append(got, strconv.Itoa(f.rank))
 		}
 		if strings.Join(got, ",") != want {
-			t.Fatalf("thinned(%d) = %v", n, got)
+			t.Fatalf("fewer(%s) = %v; want %s", ranks, got, want)
 		}
 	}
 }

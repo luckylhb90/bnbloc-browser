@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"runtime"
 	"strconv"
@@ -219,7 +220,8 @@ func jsonEqual(a, b json.RawMessage) bool {
 // used (QA 2026-10-19: a quiz answer in a small window sat under the
 // page's bottom bar, and every click was refused). A select is set here to
 // the observed option. It answers the point, {why} when the control is
-// there but cannot take input now, or null when it is gone.
+// there but cannot take input now, or null when it is gone. The point is
+// kept on the page for the step's picture (actedJS).
 const targetJS = `(action => {
   const e=window.__bnblocBrowse?.nodes.get(action.node);
   if (!e?.isConnected) return null;
@@ -258,6 +260,7 @@ const targetJS = `(action => {
     e.dispatchEvent(new Event('input',{bubbles:true}));
     e.dispatchEvent(new Event('change',{bubbles:true}));
   }
+  window.__bnblocBrowse.acted={node:action.node,x:at.x,y:at.y};
   return at;
 })`
 
@@ -470,6 +473,24 @@ type viewport struct {
 // (QA 2026-10-19: a 1200-wide window's page at 512, then 128; reproduced
 // with two sessions capturing at once).
 func capture(ctx context.Context, p browserPage, quality int) (string, viewport, error) {
+	shot, view, err := grab(ctx, p, quality)
+	if err != nil {
+		return "", view, err
+	}
+	w, h := shotSize(view, maxShotWidth)
+	if w <= 0 || h <= 0 {
+		return shot, view, nil
+	}
+	scaled, err := scaleJPEG(shot, w, h, quality)
+	if err != nil {
+		return shot, view, nil
+	}
+	return scaled, view, nil
+}
+
+// grab is Chrome's capture of the tab at the screen's pixels (base64 JPEG
+// at quality) and the viewport it shows.
+func grab(ctx context.Context, p browserPage, quality int) (string, viewport, error) {
 	var view viewport
 	_ = evaluate(ctx, p, "({W: innerWidth, H: innerHeight, DPR: devicePixelRatio, Title: document.title, URL: location.href})", &view)
 	var shot struct {
@@ -478,15 +499,36 @@ func capture(ctx context.Context, p browserPage, quality int) (string, viewport,
 	if err := p.call(ctx, "Page.captureScreenshot", map[string]any{"format": "jpeg", "quality": quality}, &shot); err != nil {
 		return "", view, err
 	}
-	w, h := shotSize(view)
-	if w <= 0 || h <= 0 {
-		return shot.Data, view, nil
-	}
-	scaled, err := scaleJPEG(shot.Data, w, h, quality)
+	return shot.Data, view, nil
+}
+
+// captureImage is capture as a picture to draw on, at most widest wide (a
+// replay's frame, encoded once it is drawn on): taken at a high quality,
+// so the one encoding that counts is the caller's.
+func captureImage(ctx context.Context, p browserPage, widest int) (*image.RGBA, viewport, error) {
+	shot, view, err := grab(ctx, p, 90)
 	if err != nil {
-		return shot.Data, view, nil
+		return nil, view, err
 	}
-	return scaled, view, nil
+	raw, err := base64.StdEncoding.DecodeString(shot)
+	if err != nil {
+		return nil, view, err
+	}
+	src, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, view, err
+	}
+	sb := src.Bounds()
+	w, h := shotSize(view, widest)
+	if w <= 0 || h <= 0 {
+		w, h = sb.Dx(), sb.Dy()
+	}
+	if sb.Dx() == w && sb.Dy() == h {
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		draw.Draw(img, img.Bounds(), src, sb.Min, draw.Src)
+		return img, view, nil
+	}
+	return scaleImage(src, w, h), view, nil
 }
 
 // boxAverage is the average colour of src's pixels in [x0,x1)×[y0,y1).

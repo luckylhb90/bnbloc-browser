@@ -58,6 +58,24 @@ where it came to, and every call that answers a page (`browser_open`,
 `browser_act`, `browser_view`, `browser_find`) checks it for a sign-in
 first. Sign-in pages are never pictured; the replay says so.
 
+**Replay pictures** (0.7.3). Each run leaves `browser-runs/<run>.html`,
+its steps with the page after each. Pictures are JPEG (quality 70) at one
+pixel per CSS pixel, at most 1280 wide (a phone run's are 390), and a
+replay may be up to 5 MiB: that is how large a page the room still plays
+in its live preview (past 2 MiB the bridge publishes it as a blob, which
+needs a core that reads files byte-exact, as the GIF guide does). A
+1280-wide page measured 50 KB a picture (125 KB for one dense with text
+and tables), so a 40-step run of ordinary pages fits whole and one of dense
+pages keeps about 30 pictures. A step that acted on a control has it framed in
+red on its picture (a dot where it pressed when the control is gone), and
+its line names it (`Clicked "Send"`). A step that left the page looking as
+it did keeps no picture of its own: the replay plays the earlier one and
+says "same as step N". When the pictures still do not all fit, plain view
+steps (scrolls) lose theirs first, then acting steps evenly, while the
+first and last steps and any that paused keep theirs; a step without its
+picture says why. The GIF guide is made of the same pictures, marks
+included. Sign-in pages are still never pictured.
+
 Nothing to configure: the room is the credential (`mcp.credentials: "room"`).
 Each call reaches the gateway through the bridge's room relay, as the person
 the agent is answering. How it works: [`docs/design.md`](docs/design.md).

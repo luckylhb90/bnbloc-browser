@@ -229,7 +229,7 @@ func (f *liveFeed) tick(ctx context.Context, last *[32]byte) (time.Duration, boo
 			post.Seq = f.seq
 			f.mu.Unlock()
 			post.MimeType, post.Data, post.Title, post.URL = "image/jpeg", shot, view.Title, view.URL
-			post.Width, post.Height = shotSize(view)
+			post.Width, post.Height = shotSize(view, maxShotWidth)
 		}
 	}
 	f.last = *last
@@ -366,15 +366,16 @@ func (f *liveFeed) pace() time.Duration {
 	return liveIdleEvery
 }
 
-// shotSize is a capture's image size (capture's scale).
-func shotSize(v viewport) (int, int) {
+// shotSize is a capture's image size at most widest wide: one image
+// pixel per CSS pixel, a wider page scaled down to widest.
+func shotSize(v viewport, widest int) (int, int) {
 	if v.W <= 0 || v.H <= 0 {
 		return 0, 0
 	}
 	w, h := v.W, v.H
-	if w > maxShotWidth {
-		h = h * maxShotWidth / w
-		w = maxShotWidth
+	if lim := float64(widest); w > lim {
+		h = h * lim / w
+		w = lim
 	}
 	return int(w), int(h)
 }

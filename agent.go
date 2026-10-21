@@ -471,7 +471,7 @@ func (t *tools) resumeSignedIn(ctx context.Context, r *runState, tb tabHandle, s
 // question, choose, submit, continue, each a wait of up to a minute).
 func (t *tools) doAll(ctx context.Context, r *runState, tb tabHandle, sess component.RelaySession, pg *page, in actInput) (*checkpoint, string, error) {
 	acts := append([]actInput{in}, in.Then...)
-	tabs := len(t.runner.host.tabs(ctx))
+	tabs, before := len(t.runner.host.tabs(ctx)), len(r.History)
 	for i, a := range acts {
 		a.Confirmed, a.Then = in.Confirmed, nil
 		if i > 0 {
@@ -489,7 +489,14 @@ func (t *tools) doAll(ctx context.Context, r *runState, tb tabHandle, sess compo
 				return nil, fmt.Sprintf("did %d of %d actions; %s, so the rest were not done: read it below", i, len(acts), stop), nil
 			}
 			pg = next
+			// The step before is pictured before the next acts (the
+			// call's last as it answers): each step of a replay has its
+			// page.
+			if len(r.History) > before {
+				t.keepFrame(ctx, r, tb)
+			}
 		}
+		before = len(r.History)
 		cp, note, err := t.do(ctx, r, tb, sess, pg, a)
 		if cp != nil || note != "" || err != nil {
 			if len(acts) > 1 && note != "" {
@@ -508,7 +515,7 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 	// what was tried) and passes its error on.
 	done := func(a action, text string, err error) error {
 		if err == nil {
-			r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: strings.ToUpper(in.Action), Action: a.Label, Kind: a.Kind, Text: text, URL: pg.URL, AtMs: t.runner.now().UnixMilli()})
+			r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: strings.ToUpper(in.Action), Action: a.Label, Kind: a.Kind, Text: text, URL: pg.URL, Node: a.Node, AtMs: t.runner.now().UnixMilli()})
 		}
 		return err
 	}
@@ -614,7 +621,7 @@ func (t *tools) do(ctx context.Context, r *runState, tb tabHandle, sess componen
 		if err != nil {
 			return nil, err.Error(), nil
 		}
-		return nil, "", done(a, in.File, t.runner.upload(ctx, r, tb, &pendingStep{Operation: opUpload, Action: a, Fingerprint: pg.Fingerprint}, path))
+		return nil, "", done(a, in.File, t.runner.upload(ctx, tb, &pendingStep{Operation: opUpload, Action: a, Fingerprint: pg.Fingerprint}, path))
 	}
 	return nil, "unknown action " + strconv.Quote(in.Action), nil
 }
@@ -730,6 +737,9 @@ func (t *tools) answer(ctx context.Context, r *runState, tb tabHandle, live *liv
 			r.History = append(r.History, historyRecord{Step: len(r.History) + 1, Operation: "PERSON", Action: "A person signs in here", Kind: "person", SignIn: true, AtMs: t.runner.now().UnixMilli()})
 		}
 	case len(r.History) > mark.steps:
+		if cp != nil {
+			r.History[len(r.History)-1].Checkpoint = cp.Kind
+		}
 		t.keepFrame(ctx, r, tb)
 	}
 	if cp != nil {

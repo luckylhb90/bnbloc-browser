@@ -263,7 +263,7 @@ func TestCapturesAtOnceKeepThePageSizeOnChrome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, _ := shotSize(viewport{W: before[0], H: before[1]})
+	want, _ := shotSize(viewport{W: before[0], H: before[1]}, maxShotWidth)
 	if img.Bounds().Dx() != want || want > maxShotWidth {
 		t.Fatalf("picture %v wide, want %d", img.Bounds().Dx(), want)
 	}
