@@ -76,6 +76,16 @@ first and last steps and any that paused keep theirs; a step without its
 picture says why. The GIF guide is made of the same pictures, marks
 included. Sign-in pages are still never pictured.
 
+**Controls a script made** (0.7.4). Besides links, buttons, fields and
+elements with a control role, a page's controls include what a script made
+clickable, as component-library admin pages build their menus, tabs and
+cards: the outermost element showing the pointer cursor, or one with an
+`onclick` attribute, that has a name. Each is a `button` labelled with its
+text (at most 120 characters). One inside a listed control or holding one
+is left to that control (a card's own button is the button), and a label
+stands for its checkbox or radio only when that field is hidden (a styled
+checkbox).
+
 Nothing to configure: the room is the credential (`mcp.credentials: "room"`).
 Each call reaches the gateway through the bridge's room relay, as the person
 the agent is answering. How it works: [`docs/design.md`](docs/design.md).

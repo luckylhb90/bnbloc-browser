@@ -64,7 +64,7 @@
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
-  const actions=[];
+  const actions=[], listed=new Set();
   for (const e of document.querySelectorAll(selector)) {
     if (e.type==='hidden' || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
@@ -72,6 +72,7 @@
     // the page at once, and an action scrolls its element into view.
     if (!rname || r.width<=0 || r.height<=0) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
+    listed.add(e);
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) base.offscreen=true;
@@ -98,6 +99,33 @@
       actions.push({...base,kind:editable?'fill':'click',value});
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
+  }
+  // An element a script made clickable (a component library's menu item, tab
+  // or card: a div or li whose click the framework binds) says so only by its
+  // pointer cursor, or by an onclick attribute. The outermost element showing
+  // the pointer is the control (its text spans inherit the cursor). One inside
+  // a listed control, or holding one, is left to that control; a label is its
+  // field's, unless the field is hidden (a styled checkbox).
+  const holds=new Set();
+  for (const e of listed) for (let p=e.parentElement; p && !holds.has(p); p=p.parentElement) holds.add(p);
+  const cursors=new Map();
+  const pointer = e => {
+    if (!e || e===document.body) return false;
+    if (!cursors.has(e)) cursors.set(e,getComputedStyle(e).cursor==='pointer');
+    return cursors.get(e);
+  };
+  for (const e of document.body.querySelectorAll('*')) {
+    if (!(e.hasAttribute('onclick') || pointer(e) && !pointer(e.parentElement))) continue;
+    if (holds.has(e) || e.closest(selector)) continue;
+    const field=e.closest('label')?.control;
+    if (listed.has(field) || !visible(e) || e.closest('[aria-disabled="true"]')) continue;
+    const label=name(e).replace(/\s+/g,' ').trim().slice(0,120), r=e.getBoundingClientRect();
+    if (!label || r.width<=0 || r.height<=0) continue;
+    const base={node:identity(e),role:'button',label,rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    const x=r.x+r.width/2, y=r.y+r.height/2;
+    if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) base.offscreen=true;
+    if (['checkbox','radio'].includes(field?.type)) Object.assign(base,{role:field.type,checked:String(field.checked)});
+    actions.push({...base,kind:'click',value:''});
   }
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   const range=document.createRange(); let node,length=0;
