@@ -175,6 +175,16 @@ In order:
    `<user config>/bnbloc-browser/profile`),
    `--remote-debugging-port=0`, the port read from `DevToolsActivePort`.
 
+**Where it runs.** The package places the tool on the host
+(`mcp.stdio.placement: "host"`, bnbloc's host-run MCP tools): in a sandboxed
+session the bridge runs it beside the agent, not as a child of the confined
+agent CLI, and the agent reaches it as an MCP server. A confined process cannot
+write the profile, so a tool started inside the agent's sandbox could never
+launch Chrome ("start it from the desktop", QA 2026-10-28). `privatePaths`
+names `bnbloc-browser` under the user's config directory: the profile with
+the member's sign-ins, which the agent's CLI may therefore not read. An
+unsandboxed session keeps the tool as the agent's child, as before.
+
 Runs are kept as `<state-dir>/brun_*.json` (default
 `<tmp>/bnbloc-browser/runs`, a place the agent sandbox allows), one call
 at a time per run (a file lock). Downloads finish into

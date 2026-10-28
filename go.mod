@@ -1,10 +1,10 @@
 module github.com/luckylhb90/bnbloc-browser
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.15
-	github.com/luckylhb90/bnbloc v0.1.1-0.20261019235257-657409a15904
+	github.com/luckylhb90/bnbloc v0.1.1-0.20261028101413-738c977acabe
 	golang.org/x/image v0.36.0
 	golang.org/x/net v0.47.0
 )

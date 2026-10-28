@@ -1,7 +1,7 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
-github.com/luckylhb90/bnbloc v0.1.1-0.20261019235257-657409a15904 h1:Jcl6fVCSvPIeargL6Md3SbXyRDbCWAjIc0Am8bw9d/k=
-github.com/luckylhb90/bnbloc v0.1.1-0.20261019235257-657409a15904/go.mod h1:B2OrRTYPq/+ipaoiV3LthCyJfc5k7LaDB/kI/w952hY=
+github.com/luckylhb90/bnbloc v0.1.1-0.20261028101413-738c977acabe h1:2qpgSINgMgS6LV/QwGS7l+t12MR7F0uKoZhkSgeJDZo=
+github.com/luckylhb90/bnbloc v0.1.1-0.20261028101413-738c977acabe/go.mod h1:NvPFA5HZA9LkYRb17Nv+mCSnftrtWAobBp//6AcEXuo=
 golang.org/x/image v0.36.0 h1:Iknbfm1afbgtwPTmHnS2gTM/6PPZfH+z2EFuOkSbqwc=
 golang.org/x/image v0.36.0/go.mod h1:YsWD2TyyGKiIX1kZlu9QfKIsQ4nAAK9bdgdrIsE7xy4=
 golang.org/x/net v0.47.0 h1:Mx+4dIFzqraBXUugkia1OOvlD6LemFo1ALMHjrXDOhY=
